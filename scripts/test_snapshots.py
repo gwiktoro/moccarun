@@ -54,44 +54,38 @@ if __name__ == "__main__":
     
     parser = ArgumentParser()
     
-    parser.add_argument('--refactoring-snapshot', default='refactoring_snapshot.dat')
-    parser.add_argument('--comparison-snapshot', default='comparison_snapshot.dat')
-    parser.add_argument('--n-systems', action='store', type=int, default=10, help="number of systems to test")
-    parser.add_argument('--download', action='store', default='None', help='what to download download refactoring snapshot', choices=['None','Refactoring','Comparison', 'Both'])
+    parser.add_argument('snapshot0')
+    parser.add_argument('snapshot1')
+    parser.add_argument('--n-systems', action='store', type=int, default=None, help="number of systems to test")
     parser.add_argument('--logLevel', default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help='verbosity level for logger')
     args = parser.parse_args()
     
     logger.setLevel(logging.__dict__[args.logLevel])
     
-    if args.download in ['Refactoring','Both']:
-        logger.info('Downloading snapshot')
-        cmd = 'scp camk:/work/chuck/mocca/gwiktoro/mocca-evolv2b-refactoring/src/snapshot.dat refactoring_snapshot.dat'
-        print(cmd)
-        subprocess.run(cmd, shell=True)
-    if args.download in ['Comparison','Both']:
-        logger.info('Downloading snapshot')
-        cmd = 'scp camk:/work/chuck/mocca/gwiktoro/mocca-evolv2b-comparison/src/snapshot.dat comparison_snapshot.dat'
-        print(cmd)
-        subprocess.run(cmd, shell=True)
-    
     logger.info('Loading snapshots')
-    snapshot_refactoring = ml.read_snapshot(args.refactoring_snapshot,
+    snapshot0 = ml.read_snapshot(args.snapshot0,
                             tsnap_range=None)
-    snapshot_comparison = ml.read_snapshot(args.comparison_snapshot,
+    snapshot1 = ml.read_snapshot(args.snapshot1,
                                 tsnap_range=None)
-    logger.info(f"{snapshot_refactoring.shape=}; {snapshot_comparison.shape=}")
-    logger.info(f"{snapshot_refactoring.im.nunique()=}")
+    logger.info(f"{snapshot0.shape=}; {snapshot1.shape=}")
+    logger.info(f"{snapshot0.im.nunique()=}")
     
     cols_to_compare = ['ik1','ik2','sm1','sm2','a','e','mtr1','mtr2']  # TODO add as argument
+    logger.debug(f"{cols_to_compare=}")
     
-    im_l = np.random.choice(snapshot_refactoring.im.unique(), args.n_systems, replace=False).tolist()
+    im_all = snapshot0.im.unique()
+    if args.n_systems is None:
+        im_l = im_all.tolist()  #snapshot_refactoring.im.unique().tolist()
+    else:
+        im_l = np.random.choice(im_all, min(args.n_systems, len(im_all)), replace=False).tolist()
+    logger.info(f"{len(im_l)=}")
     
     n_comparison_failed = 0
     for im in im_l:
         logger.debug(f"{im=}")
-        df_ref, df_comp = get_system(im, snapshot_refactoring, snapshot_comparison)
-        logger.debug(f"{im=}; {df_ref.ikb.unique()=}; {df_comp.ikb.unique()=}")
-        ret = compare_cols(df_ref, df_comp, cols_to_compare, show=False)
+        df0, df1 = get_system(im, snapshot0, snapshot1)
+        logger.debug(f"{im=}; {df0.ikb.unique()=}; {df1.ikb.unique()=}")
+        ret = compare_cols(df0, df1, cols_to_compare, show=False)
         if not (ret.smape==0).all():
             logger.warning("SMAPE is nonzero!\n" + repr(ret))
             # display(ret)
@@ -99,7 +93,7 @@ if __name__ == "__main__":
             
             
     if n_comparison_failed > 0:
-        logger.warning(f"{n_comparison_failed=}")
+        logger.warning(f"{n_comparison_failed=} ({n_comparison_failed/len(im_l) * 100:.2f}%)")
         exit(1)
     else:
         logger.info("ALL GOOD!")
