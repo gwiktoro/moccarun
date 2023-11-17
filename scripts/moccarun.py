@@ -2,6 +2,7 @@
 
 from argparse import ArgumentParser
 from pathlib import Path
+from shutil import rmtree
 import subprocess
 
 import logging
@@ -20,29 +21,87 @@ cp ../../mocca .
 sbatch $@ mocca.slurm
 
 """
+def fix_path(path):
+    """ ensure that the path is Path() class and is absolute """
 
-def moccarun(run_path='.', mocca_binary_path=None, keep_mocca_binary=False, user_email='gwiktoro@camk.edu.pl', partition=None, dry_run=False, wait=False, **kwargs):
+    return Path(path).absolute()
 
+def clean_dir(path, keep=[]):
+    """ Cleans the target directory from all files except those specified in `keep` """
+
+    path = fix_path(path)
+
+    for item in path.iterdir():
+        if item.name not in keep:
+            if item.is_file():
+                item.unlink()
+            elif item.is_dir():
+                rmtree(item)
+
+
+def find_mocca_in_parents(path):
+
+    path = fix_path(path)
+    parent_dir = path.parent
+    while len(parent_dir.parents)>0:
+        if parent_dir.stem == 'src' and (parent_dir / 'mocca').is_file():
+            mocca_binary_path = parent_dir / 'mocca'
+            break
+        parent_dir = parent_dir.parent
+    else:
+        mocca_binary_path = None
+
+    return mocca_binary_path
+
+def myrun(cmd, **kwargs):
+
+    logger.debug(f"{cmd=}")
+    subprocess.run(cmd, shell=True, **kwargs)
+
+def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca_binary=False, mocca_binary_path=None, moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, **kwargs):
 
     logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
 
-    run_path = Path(run_path).absolute()
+    assert commit is None or (commit is not None and make_path is not None), "make_path has to be provided together with commit"
+
+    if make_path is not None:
+        cmd = f"(cd {make_path} && "
+        if commit is not None:
+            cmd += f"git checkout -f {commit} && "
+        cmd += "make clean && make debug > /dev/null)"
+        myrun(cmd)
+
+
+    run_path = fix_path(run_path)
     logger.debug(f"{run_path=}")
 
-    # clean directory except nbody, moccaini and mocca.slurm files
-    logger.info("Cleaning the current directory")
-    files_to_keep = ['single_nbody.dat', 'binary_nbody.dat', 'mocca.slurm', 'mocca.ini']  # mocca.ini MUST be last on this list
-    if keep_mocca_binary:
-        files_to_keep.append('mocca')
+#    # clean directory except nbody, moccaini and mocca.slurm files
+#    logger.info("Cleaning the current directory")
+#    files_to_keep = ['single_nbody.dat', 'binary_nbody.dat', 'mocca.slurm', 'mocca.ini']
+#    if keep_mocca_binary:
+#        files_to_keep.append('mocca')
+#    clean_dir(run_path, keep=files_to_keep)
 
-#    tmp = '\|'.join(files_to_keep)
-#    cmd = rf"shopt -s extglob; rm -rf !\({tmp}\)"
-    cmd = f"(cd {run_path} && mkdir -p .moccarun_tmp && for file in {' '.join(files_to_keep)}; do [ -e $file ] && mv $file .moccarun_tmp; done && rm -rf * && mv .moccarun_tmp/* . && rmdir .moccarun_tmp)"
-    logger.debug(f"{cmd=}")
-    subprocess.run(cmd, shell=True, executable='/bin/bash')
+    if not run_path.exists():
+        logger.info(f"Creating directory {run_path}")
+        if ref_dir is None:
+            logger.error(f"Provide reference directory (ref_dir) when creating a new directory!")
+            exit(1)
+        myrun(f"mkdir -p {run_path}")
+
+
+    if ref_dir is not None:
+        myrun(f"cp {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {run_path}")
+
 
     assert (run_path / 'mocca.ini').is_file(), "mocca.ini missing!"
+    assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     
+    if moccaini is not None:
+        sed_cmd = ';'.join(f"s/{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
+        myrun(f'sed -i "{sed_cmd}" {run_path/"mocca.ini"}')
+
+
 
 
     if not keep_mocca_binary:
@@ -50,26 +109,19 @@ def moccarun(run_path='.', mocca_binary_path=None, keep_mocca_binary=False, user
         logger.info("Copying mocca binary")
         if mocca_binary_path is not None:
 
-            mocca_binary_path = Path(mocca_binary_path)
+            mocca_binary_path = fix_path(mocca_binary_path)
         
         else:
             
+            mocca_binary_path = find_mocca_in_parents(run_path)
             # localizing and coping mocca binary
-            parent_dir = run_path.parent
-            while len(parent_dir.parents)>0:
-                if parent_dir.stem == 'src' and (parent_dir / 'mocca').is_file():
-                    mocca_binary_path = parent_dir / 'mocca'
-                    break
-                parent_dir = parent_dir.parent
-            else:
+            if mocca_binary_path is None:
                 logger.error("mocca binary not found in parent directories! Exiting...")
                 exit(1)
-
         logger.debug(f"{mocca_binary_path=}")
+
         #(run_path / 'mocca').write_bytes((parent_dir / 'mocca').read_bytes())
-        cmd = f"cp {parent_dir / 'mocca'} {run_path / 'mocca'}"
-        logger.debug(f"{cmd=}")
-        subprocess.run(cmd, shell=True)
+        myrun(f"cp {mocca_binary_path} {run_path}")
         
     logger.info("Updating slurm script")
     assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
@@ -89,33 +141,42 @@ def moccarun(run_path='.', mocca_binary_path=None, keep_mocca_binary=False, user
             exit(1)
     
     sed_cmd = ';'.join(sed_cmd_l)
-    cmd = f'sed -i "{sed_cmd}" {run_path/"mocca.slurm"}'
-    logger.debug(f"{cmd=}")
-    subprocess.run(cmd, shell=True)
+    myrun(f'sed -i "{sed_cmd}" {run_path/"mocca.slurm"}')
 
     if not dry_run:
-        cmd = f"(cd {run_path} && sbatch {'--wait' if wait else ''} mocca.slurm)"
-        logger.debug(f"{cmd=}")
-        subprocess.run(cmd, shell=True)
+        myrun(f"(cd {run_path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
 
 
 def parse_args():
 
     # Create the argument parser
-    parser = ArgumentParser(description="""Test code against another code. 
+    parser = ArgumentParser(description=""" Utility for running mocca code
 
-            TODO: improve help messages below
+            TODO: add option to test_snapshots 
             """)
 
-    # Add the script_path argument
-    parser.add_argument('path', type=Path, default='.', nargs='?', const='.', help='path to dirrectory with mocca.ini and mocca.slurm')
+    # PATH
+    parser.add_argument('run_path', type=Path, default='.', nargs='?', const='.', help='path to dirrectory with mocca.ini and mocca.slurm')
+
+    # MOCCA BINARY
+    parser.add_argument('--make-path', type=Path, help="Do the code compilation before running the test")
+    parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
+    parser.add_argument('--keep-mocca-binary', action='store_true', help='path to dirrectory with mocca.ini')
     parser.add_argument('--mocca-binary-path', type=Path, default=None, help='path to mocca binary. If not provided parent directories would be searched')
+
+    # MOCCAINIT
+    parser.add_argument('--moccaini', type=json.loads, default={}, help="arguments to change in mocca.ini")
+
+    # SLURM
     parser.add_argument('--user-email', type=str, default='gwiktoro@camk.edu.pl', help='path to dirrectory with mocca.ini')
     parser.add_argument('--partition', type=str, choices=['short','long'], default=None, help='path to dirrectory with mocca.ini')
-    parser.add_argument('--dry-run', action='store_true', help='path to dirrectory with mocca.ini')
-    parser.add_argument('--logLevel', action='store', choices=['DEBUG','INFO','WARNING','ERROR'], default='WARNING')
-    parser.add_argument('--keep-mocca-binary', action='store_true', help='path to dirrectory with mocca.ini')
+
+    # EXECUTION
     parser.add_argument('--wait', action='store_true', help='wait for simulation to finish (e.g. when used in a pipe)')
+    parser.add_argument('--dry-run', action='store_true', help='path to dirrectory with mocca.ini')
+
+    # MISC
+    parser.add_argument('--logLevel', action='store', choices=['DEBUG','INFO','WARNING','ERROR'], default='WARNING')
 
     # Parse the command-line arguments
     args = parser.parse_args()
