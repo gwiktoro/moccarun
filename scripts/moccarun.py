@@ -4,6 +4,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 from shutil import rmtree
 import subprocess
+import json
 
 import logging
 logging.basicConfig(format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
@@ -161,6 +162,7 @@ def parse_args():
     # MOCCA BINARY
     parser.add_argument('--make-path', type=Path, help="Do the code compilation before running the test")
     parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
+    parser.add_argument('--ref-dir', type=str, default=None, help='Directory with reference files (mocca.ini, mocca.slurm, *nbody.dat)')
     parser.add_argument('--keep-mocca-binary', action='store_true', help='path to dirrectory with mocca.ini')
     parser.add_argument('--mocca-binary-path', type=Path, default=None, help='path to mocca binary. If not provided parent directories would be searched')
 
