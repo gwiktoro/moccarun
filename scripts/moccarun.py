@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from copy import copy
+
 from argparse import ArgumentParser
 from pathlib import Path
 from shutil import rmtree
@@ -57,7 +59,8 @@ def find_mocca_in_parents(path):
 def myrun(cmd, **kwargs):
 
     logger.debug(f"{cmd=}")
-    subprocess.run(cmd, shell=True, **kwargs)
+    p = subprocess.run(cmd, shell=True, **kwargs)
+    return p
 
 def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca_binary=False, mocca_binary_path=None, moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, **kwargs):
 
@@ -70,7 +73,10 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
         if commit is not None:
             cmd += f"git checkout -f {commit} && "
         cmd += "make clean && make debug > /dev/null)"
-        myrun(cmd)
+        p = myrun(cmd)
+        if p.returncode != 0:
+            logger.error(f"Compilation failed {p.returncode=}")
+            exit(1)
 
 
     run_path = fix_path(run_path)
@@ -157,7 +163,7 @@ def parse_args():
             """)
 
     # PATH
-    parser.add_argument('run_path', type=Path, default='.', nargs='?', const='.', help='path to dirrectory with mocca.ini and mocca.slurm')
+    parser.add_argument('run_path', type=Path, default=['.'], nargs='*', help='path to dirrectory with mocca.ini and mocca.slurm')
 
     # MOCCA BINARY
     parser.add_argument('--make-path', type=Path, help="Do the code compilation before running the test")
@@ -194,7 +200,11 @@ def main():
     del args.logLevel
 
     # Call the function to execute the bash script
-    moccarun(**vars(args))
+    for rp in args.run_path:
+        run_args = copy(args)
+        run_args.run_path = rp
+        logger.debug(f"{run_args=}")
+        moccarun(**vars(run_args))
 
 if __name__ == '__main__':
     main()
