@@ -98,14 +98,15 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
 
 
     if ref_dir is not None:
-        myrun(f"cp {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {run_path}")
+        myrun(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {run_path}")  # '-f' is necessary for overwriting existing files
+                                                                                    # othewrise the command fails
 
 
     assert (run_path / 'mocca.ini').is_file(), "mocca.ini missing!"
     assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     
     if moccaini is not None:
-        sed_cmd = ';'.join(f"s/{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
+        sed_cmd = ';'.join(f"s/^{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
         myrun(f'sed -i "{sed_cmd}" {run_path/"mocca.ini"}')
 
 
@@ -139,10 +140,16 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
     if partition is not None:
         if partition == 'short':
             sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
             sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p short/")
         elif partition == 'long':
             sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=336:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
             sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p long/")
+        elif partition == 'bigmem':
+            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=168:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=5999MB/")
+            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p bigmem/")
         else:
             logger.error("Unsupported partition type! Exiting...")
             exit(1)
@@ -177,14 +184,14 @@ def parse_args():
 
     # SLURM
     parser.add_argument('--user-email', type=str, default='gwiktoro@camk.edu.pl', help='path to dirrectory with mocca.ini')
-    parser.add_argument('--partition', type=str, choices=['short','long'], default=None, help='path to dirrectory with mocca.ini')
+    parser.add_argument('--partition', type=str, choices=['short','long', 'bigmem'], default=None, help='path to dirrectory with mocca.ini')
 
     # EXECUTION
     parser.add_argument('--wait', action='store_true', help='wait for simulation to finish (e.g. when used in a pipe)')
     parser.add_argument('--dry-run', action='store_true', help='path to dirrectory with mocca.ini')
 
     # MISC
-    parser.add_argument('--logLevel', action='store', choices=['DEBUG','INFO','WARNING','ERROR'], default='WARNING')
+    parser.add_argument('--logLevel', action='store', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='WARNING')
 
     # Parse the command-line arguments
     args = parser.parse_args()
