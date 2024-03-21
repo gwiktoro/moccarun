@@ -8,6 +8,8 @@ from shutil import rmtree
 import subprocess
 import json
 
+from itertools import product
+
 import logging
 logging.basicConfig(format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
 logger = logging.getLogger(__name__)
@@ -62,7 +64,7 @@ def myrun(cmd, **kwargs):
     p = subprocess.run(cmd, shell=True, **kwargs)
     return p
 
-def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca_binary=False, mocca_binary_path=None, moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, **kwargs):
+def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='SEARCH', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, **kwargs):
 
     logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
 
@@ -79,62 +81,66 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
             exit(1)
 
 
-    run_path = fix_path(run_path)
-    logger.debug(f"{run_path=}")
+    path = fix_path(path)
+    logger.debug(f"{path=}")
 
 #    # clean directory except nbody, moccaini and mocca.slurm files
 #    logger.info("Cleaning the current directory")
 #    files_to_keep = ['single_nbody.dat', 'binary_nbody.dat', 'mocca.slurm', 'mocca.ini']
 #    if keep_mocca_binary:
 #        files_to_keep.append('mocca')
-#    clean_dir(run_path, keep=files_to_keep)
+#    clean_dir(path, keep=files_to_keep)
 
-    if not run_path.exists():
-        logger.info(f"Creating directory {run_path}")
+    if not path.exists():
+        logger.info(f"Creating directory {path}")
         if ref_dir is None:
             logger.error(f"Provide reference directory (ref_dir) when creating a new directory!")
             exit(1)
-        myrun(f"mkdir -p {run_path}")
+        myrun(f"mkdir -p {path}")
 
 
     if ref_dir is not None:
-        myrun(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {run_path}")  # '-f' is necessary for overwriting existing files
+        myrun(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {path}")  # '-f' is necessary for overwriting existing files
                                                                                     # othewrise the command fails
 
 
-    assert (run_path / 'mocca.ini').is_file(), "mocca.ini missing!"
-    assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
+    assert (path / 'mocca.ini').is_file(), "mocca.ini missing!"
+    assert (path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     
     if moccaini is not None:
         sed_cmd = ';'.join(f"s/^{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
-        myrun(f'sed -i "{sed_cmd}" {run_path/"mocca.ini"}')
+        myrun(f'sed -i "{sed_cmd}" {path/"mocca.ini"}')
 
 
 
 
-    if not keep_mocca_binary:
+    if mocca_binary != "KEEP":
+        if mocca_binary == 'FIND':
 
-        logger.info("Copying mocca binary")
-        if mocca_binary_path is not None:
-
-            mocca_binary_path = fix_path(mocca_binary_path)
-        
-        else:
-            
-            mocca_binary_path = find_mocca_in_parents(run_path)
+            mocca_binary_path = find_mocca_in_parents(path)
             # localizing and coping mocca binary
             if mocca_binary_path is None:
                 logger.error("mocca binary not found in parent directories! Exiting...")
                 exit(1)
+        else:
+            if not mocca_binary.endswith('/mocca'):
+                mocca_binary += '/mocca'
+            mocca_binary_path = fix_path(mocca_binary)
+            
         logger.debug(f"{mocca_binary_path=}")
 
-        #(run_path / 'mocca').write_bytes((parent_dir / 'mocca').read_bytes())
-        myrun(f"cp {mocca_binary_path} {run_path}")
-        
+
+        #(path / 'mocca').write_bytes((parent_dir / 'mocca').read_bytes())
+        p = myrun(f"cp {mocca_binary_path} {path}")
+        if p.returncode != 0:
+            logger.error(f"Mocca binary not found in {mocca_binary_path=}")
+            exit(1)
+
+    # SLURM
     logger.info("Updating slurm script")
-    assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
+    assert (path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     sed_cmd_l = [
-        f"s/#SBATCH -J .*/#SBATCH -J {run_path.stem}/",
+        f"s/#SBATCH -J .*/#SBATCH -J {path.stem}/",
         f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={user_email}/"
         ]
     if partition is not None:
@@ -155,10 +161,10 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
             exit(1)
     
     sed_cmd = ';'.join(sed_cmd_l)
-    myrun(f'sed -i "{sed_cmd}" {run_path/"mocca.slurm"}')
+    myrun(f'sed -i "{sed_cmd}" {path/"mocca.slurm"}')
 
     if not dry_run:
-        myrun(f"(cd {run_path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
+        myrun(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
 
 
 def parse_args():
@@ -170,21 +176,24 @@ def parse_args():
             """)
 
     # PATH
-    parser.add_argument('run_path', type=Path, default=['.'], nargs='*', help='path to dirrectory with mocca.ini and mocca.slurm')
+    parser.add_argument('paths', type=Path, default=['.'], nargs='*', help='paths to directories with mocca.ini and mocca.slurm')
 
     # MOCCA BINARY
     parser.add_argument('--make-path', type=Path, help="Do the code compilation before running the test")
     parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
     parser.add_argument('--ref-dir', type=str, default=None, help='Directory with reference files (mocca.ini, mocca.slurm, *nbody.dat)')
-    parser.add_argument('--keep-mocca-binary', action='store_true', help='path to dirrectory with mocca.ini')
-    parser.add_argument('--mocca-binary-path', type=Path, default=None, help='path to mocca binary. If not provided parent directories would be searched')
+    parser.add_argument('--mocca-binary', action='store', type=str, default='FIND', help="Defines how to obtain the `mocca` binary file. 'FIND' (default) - look for mocca binary in upper directories; 'KEEP' - keep the current `mocca` binary (must be present); otherwise, treated as path to the mocca binary or the folder where it's located")
+#    parser.add_argument('--mocca-binary-path', type=Path, default=None, help='path to mocca binary. If not provided parent directories would be searched')
 
     # MOCCAINIT
     parser.add_argument('--moccaini', type=json.loads, default={}, help="arguments to change in mocca.ini")
 
+    # GRID
+    parser.add_argument('--grid', type=json.loads, default={}, help="JSON string defining the simulation's grid")
+
     # SLURM
-    parser.add_argument('--user-email', type=str, default='gwiktoro@camk.edu.pl', help='path to dirrectory with mocca.ini')
-    parser.add_argument('--partition', type=str, choices=['short','long', 'bigmem'], default=None, help='path to dirrectory with mocca.ini')
+    parser.add_argument('--user-email', type=str, default='gwiktoro@camk.edu.pl', help='user email for slurm notification (default: gwiktoro@camk.edu.pl)')
+    parser.add_argument('--partition', type=str, choices=['short','long', 'bigmem'], default=None, help='slurm partition name (default: not change)')
 
     # EXECUTION
     parser.add_argument('--wait', action='store_true', help='wait for simulation to finish (e.g. when used in a pipe)')
@@ -206,10 +215,30 @@ def main():
     logger.debug(f"{args=}")
     del args.logLevel
 
+    # Start a grid of simulations
+    if args.grid is not None:
+        if len(args.paths)!=1:
+            logger.error(f"paths must be a sigle Path for '--grid' (len(paths)={len(args.paths)})")
+            return 1
+        grid_path = args.paths[0]
+        grid = args.grid
+        del args.grid
+        del args.paths
+        
+        for vals in product(*grid.values()):
+            args.moccaini = dict(zip(grid.keys(), vals))
+            print(args.moccaini)
+            
+            moccarun(grid_path / '_'.join(f"{k}={v}" for k, v in args.moccaini.items()).replace(' ', ''),
+                    #moccaini=moccaini,
+                    **vars(args))
+        return 0
+
+
     # Call the function to execute the bash script
-    for rp in args.run_path:
+    for rp in args.paths:
         run_args = copy(args)
-        run_args.run_path = rp
+        run_args.path = rp
         logger.debug(f"{run_args=}")
         moccarun(**vars(run_args))
 
