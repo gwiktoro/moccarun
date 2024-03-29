@@ -64,7 +64,7 @@ def myrun(cmd, **kwargs):
     p = subprocess.run(cmd, shell=True, **kwargs)
     return p
 
-def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='SEARCH', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, **kwargs):
+def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='SEARCH', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, no_slurm=False, **kwargs):
 
     logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
 
@@ -105,7 +105,6 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
 
 
     assert (path / 'mocca.ini').is_file(), "mocca.ini missing!"
-    assert (path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     
     if moccaini is not None:
         sed_cmd = ';'.join(f"s/^{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
@@ -138,12 +137,13 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
 
     # SLURM
     logger.info("Updating slurm script")
-    assert (path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
+
     sed_cmd_l = [
         f"s/#SBATCH -J .*/#SBATCH -J {path.stem}/",
         f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={user_email}/"
         ]
     if partition is not None:
+        assert (path / 'mocca.slurm').is_file(), "partition provided but mocca.slurm missing!"
         if partition == 'short':
             sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
             sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
@@ -160,11 +160,19 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
             logger.error("Unsupported partition type! Exiting...")
             exit(1)
     
-    sed_cmd = ';'.join(sed_cmd_l)
-    myrun(f'sed -i "{sed_cmd}" {path/"mocca.slurm"}')
+    if (path / 'mocca.slurm').is_file():
+        sed_cmd = ';'.join(sed_cmd_l)
+        myrun(f'sed -i "{sed_cmd}" {path/"mocca.slurm"}')
+    else:
+        logger.warning('macca.slurm missing!')
 
     if not dry_run:
-        myrun(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
+        if no_slurm:
+            myrun(f"(cd {path} && ./mocca > zzz)")
+        else:
+            myrun(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
+    else:
+        logger.info("dry run finished")
 
 
 def parse_args():
@@ -189,9 +197,10 @@ def parse_args():
     parser.add_argument('--moccaini', type=json.loads, default={}, help="arguments to change in mocca.ini")
 
     # GRID
-    parser.add_argument('--grid', type=json.loads, default={}, help="JSON string defining the simulation's grid")
+    parser.add_argument('--grid', type=json.loads, default=None, help="JSON string defining the simulation's grid")
 
     # SLURM
+    parser.add_argument('--no-slurm', action='store_true', help="do not send slurm job, but execute code normally")
     parser.add_argument('--user-email', type=str, default='gwiktoro@camk.edu.pl', help='user email for slurm notification (default: gwiktoro@camk.edu.pl)')
     parser.add_argument('--partition', type=str, choices=['short','long', 'bigmem'], default=None, help='slurm partition name (default: not change)')
 
