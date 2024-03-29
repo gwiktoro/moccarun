@@ -134,7 +134,7 @@ def moccarun(run_path='.', make_path=None, commit=None, ref_dir=None, keep_mocca
     logger.info("Updating slurm script")
     assert (run_path / 'mocca.slurm').is_file(), "mocca.slurm missing!"
     sed_cmd_l = [
-        f"s/#SBATCH -J .*/#SBATCH -J {run_path.stem}/",
+        f"s/#SBATCH -J .*/#SBATCH -J {run_path.name}/",
         f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={user_email}/"
         ]
     if partition is not None:
