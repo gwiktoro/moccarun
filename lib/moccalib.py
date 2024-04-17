@@ -88,7 +88,7 @@ def read_mocca_file(path, names=None, chunksize=None):
                      header=None,
                      names=names,
                      comment='#',  # skipping header
-                     delim_whitespace=True,  # equivalent to but faster than sep='\s+'
+                     sep='\s+',
                      chunksize=chunksize,
            )
             
