@@ -8,6 +8,8 @@ from shutil import rmtree
 import subprocess
 import json
 
+import re
+
 from itertools import product
 
 import logging
@@ -174,6 +176,34 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
     else:
         logger.info("dry run finished")
 
+def make_mocca(path, clean=False, size=None):
+    """ Compiles MOCCA code
+
+    Applies changes to internal params if needed 
+
+    CHANGELOG: changes to Mcluster/main.c are no longer needed with the new code
+
+    Args:
+        size (str): "small", "large" or None (default) - changes params.h and Mcluster/main.c to account for small or large memorry usageg
+    """
+    if size is not None:
+        if size == "small":
+            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/"
+#            MC_main_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/"
+        elif size == "large":
+            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/"
+#            MC_main_sed_cmd = f"s/int NMAX = [0-9]\+;/int NMAX = 5200000;/"
+        else:
+            logger.error("wrong value of size in make_mocca(): {size=}")
+            exit(0)
+        myrun(f'sed -i "{MOCCA_params_sed_cmd}" {path / "MOCCA/params.h"}')
+#       myrun(f'sed -i "{MC_main_sed_cmd}" {path / "Mcluster/main.c"}')
+
+    cmd = f"(cd {path} &&"
+    if clean:
+        cmd += " make clean &&"
+    cmd += " make debug)"
+    myrun(cmd)
 
 def parse_args():
 
@@ -184,10 +214,10 @@ def parse_args():
             """)
 
     # PATH
-    parser.add_argument('paths', type=Path, default=['.'], nargs='*', help='paths to directories with mocca.ini and mocca.slurm')
+    parser.add_argument('paths', type=Path, default=[Path('.')], nargs='*', help='paths to directories with mocca.ini and mocca.slurm')
 
     # MOCCA BINARY
-    parser.add_argument('--make-path', type=Path, help="Do the code compilation before running the test")
+    parser.add_argument('--make', type=str, nargs='?', default=None, const='clean', help="clean,small,large")
     parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
     parser.add_argument('--ref-dir', type=str, default=None, help='Directory with reference files (mocca.ini, mocca.slurm, *nbody.dat)')
     parser.add_argument('--mocca-binary', action='store', type=str, default='FIND', help="Defines how to obtain the `mocca` binary file. 'FIND' (default) - look for mocca binary in upper directories; 'KEEP' - keep the current `mocca` binary (must be present); otherwise, treated as path to the mocca binary or the folder where it's located")
@@ -224,6 +254,10 @@ def main():
     logger.debug(f"{args=}")
     del args.logLevel
 
+    print(f'PATHS: {args.paths}')
+    print(f'MAKE: {args.make}')
+
+
     # Start a grid of simulations
     if args.grid is not None:
         if len(args.paths)!=1:
@@ -249,6 +283,12 @@ def main():
         run_args = copy(args)
         run_args.path = rp
         logger.debug(f"{run_args=}")
+
+        if run_args.make is not None:
+            logger.debug(f'make: {run_args.make=}')
+            make_mocca(run_args.path, clean=('clean' in run_args.make), size=(((re_size:=re.search('(small|large)', run_args.make)) is not None) and re_size.group(0) or None))
+            continue  # FIXME  for the current moment I dont allow for make and run at the same time; we need to add looking for the src in the upper folder hierarchy
+
         moccarun(**vars(run_args))
 
 if __name__ == '__main__':
