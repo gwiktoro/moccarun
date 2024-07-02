@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+__VERSION__ = '240508'
+
 from copy import copy
 
 from argparse import ArgumentParser
@@ -13,7 +15,7 @@ import re
 from itertools import product
 
 import logging
-logging.basicConfig(format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
+logging.basicConfig(level='INFO', format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
 logger = logging.getLogger(__name__)
 
 """
@@ -46,12 +48,12 @@ def clean_dir(path, keep=[]):
                 rmtree(item)
 
 
-def find_mocca_in_parents(path):
+def find_mocca_in_parents(path, require_src_stem=False):
 
     path = fix_path(path)
     parent_dir = path.parent
     while len(parent_dir.parents)>0:
-        if parent_dir.stem == 'src' and (parent_dir / 'mocca').is_file():
+        if (not require_src_stem or parent_dir.stem == 'src') and (parent_dir / 'mocca').is_file():
             mocca_binary_path = parent_dir / 'mocca'
             break
         parent_dir = parent_dir.parent
@@ -60,13 +62,105 @@ def find_mocca_in_parents(path):
 
     return mocca_binary_path
 
-def myrun(cmd, **kwargs):
+def find_mocca_src_path(path):
 
+    path = fix_path(path)
+    current = path
+    while len(current.parents)>0:
+        if current.stem == 'src' and (current / 'mocca-default-2pop.ini').is_file() and (current / 'MOCCA').is_dir() and (current / 'bse').is_dir():
+            mocca_src_path = current
+            break
+        current = current.parent
+    else:
+        mocca_src_path = None
+
+    return mocca_src_path
+
+
+def run(cmd, **kwargs):
+    """ Run subprocess command
+    
+    assuming shell=True and capture_output=True if not specified in kwargs
+
+    Args
+        cmd (str): command to run
+        **kwargs : passed to subprocess.run()
+    Returns
+        subprocess.CompletedProcess
+    """
+    if 'shell' not in kwargs.keys():
+        kwargs['shell'] = True
+
+    if 'capture_output' not in kwargs.keys():
+        kwargs['capture_output'] = True
+    
     logger.debug(f"{cmd=}")
-    p = subprocess.run(cmd, shell=True, **kwargs)
+    logger.debug(f"{kwargs=}")
+    p = subprocess.run(cmd, **kwargs)
     return p
 
-def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='SEARCH', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, no_slurm=False, **kwargs):
+def set_moccaini(path, **kwargs):
+    """ make changes to mocca.ini file
+
+    Args:
+        path (Path | str): path to mocca.ini file
+        kwargs: key and values to update
+    """
+
+    path = fix_path(path)
+    assert path.is_file(), f"not a file: {path=}"
+
+    for k, v in kwargs.items():
+        p = run(f'grep "^{k}\s*=\s*[^#]\+" {path}')
+        if p.returncode == 1:
+            logger.error(f"key not found in mocca.ini: {k=}")
+            exit(1)
+        p_sed = run(f'sed -i "s/^{k}\s*=\s*.*/{k} = {v}/" {path}')
+        assert p_sed.returncode == 0, "sed run incorrectly! {p_sed.args=}"
+        logger.info(f"{p.stdout.decode('utf8').strip()} -> {v}")
+
+def set_moccaslurm(path, job_name=None, mail_user=None, partition=None, escape_bin_restart=False):
+    """ updates the mocca.slurm file 
+
+    Args:
+        path (Path | str): path to mocca.slurm file
+    """
+
+    path = fix_path(path)
+    assert path.is_file() and path.name == "mocca.slurm", f"Not a mocca slurm file! {path=}"
+
+    sed_cmd_l = []
+
+    if job_name is not None:
+        sed_cmd_l.append(f"s/#SBATCH -J .*/#SBATCH -J {job_name}/")
+    if mail_user is not None:
+        sed_cmd_l.append(f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={mail_user}/")
+    if partition is not None:
+        if partition == 'short':
+            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
+            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p short/")
+        elif partition == 'long':
+            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=336:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
+            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p long/")
+        elif partition == 'bigmem':
+            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=168:00:00/")
+            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=5999MB/")
+            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p bigmem/")
+        else:
+            logger.error(f"Unsupported partition type! {partition=}")
+            exit(1)
+    
+    if escape_bin_restart:
+        sed_cmd_l.append(f"s/^.\/mocca.*/.\/mocca --escape-bin-restart > zzz-escape-bin-restart/")
+    else:
+        sed_cmd_l.append(f"s/^\.\/mocca.*/.\/mocca > zzz/")
+
+    sed_cmd = ';'.join(sed_cmd_l)
+    run(f'sed -i "{sed_cmd}" {path}')
+
+def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, ref_dir=None, mocca_binary='FIND', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, no_slurm=False, escape_bin_restart=False, **kwargs):
 
     logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
 
@@ -77,7 +171,7 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
         if commit is not None:
             cmd += f"git checkout -f {commit} && "
         cmd += "make clean && make debug > /dev/null)"
-        p = myrun(cmd)
+        p = run(cmd)
         if p.returncode != 0:
             logger.error(f"Compilation failed {p.returncode=}")
             exit(1)
@@ -95,22 +189,25 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
 
     if not path.exists():
         logger.info(f"Creating directory {path}")
+        run(f"mkdir -p {path}")
         if ref_dir is None:
-            logger.error(f"Provide reference directory (ref_dir) when creating a new directory!")
-            exit(1)
-        myrun(f"mkdir -p {path}")
-
+            mocca_src_path = mocca_src_path or find_mocca_src_path(path)
+            assert mocca_src_path is not None, "no path to MOCCA's src/"
+            logger.info(f"populating initial files from {mocca_src_path=}")
+            run(f"cp -f {mocca_src_path}/mocca-default-2pop.ini {path}/mocca.ini && cp -f {mocca_src_path}/mocca.slurm {path}")
+            # TODO copy mocca.ini and mocca.slurm from code dir
 
     if ref_dir is not None:
-        myrun(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {path}")  # '-f' is necessary for overwriting existing files
+        run(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {path}")  # '-f' is necessary for overwriting existing files
                                                                                     # othewrise the command fails
 
 
-    assert (path / 'mocca.ini').is_file(), "mocca.ini missing!"
-    
-    if moccaini is not None:
-        sed_cmd = ';'.join(f"s/^{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
-        myrun(f'sed -i "{sed_cmd}" {path/"mocca.ini"}')
+    set_moccaini(path / 'mocca.ini', **moccaini)
+#    assert (path / 'mocca.ini').is_file(), "mocca.ini missing!"
+#    
+#    if moccaini is not None:
+#        sed_cmd = ';'.join(f"s/^{param}\s*=\s*.*/{param} = {value}/" for param, value in moccaini.items())
+#        run(f'sed -i "{sed_cmd}" {path/"mocca.ini"}')
 
 
 
@@ -132,7 +229,7 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
 
 
         #(path / 'mocca').write_bytes((parent_dir / 'mocca').read_bytes())
-        p = myrun(f"cp {mocca_binary_path} {path}")
+        p = run(f"cp {mocca_binary_path} {path}")
         if p.returncode != 0:
             logger.error(f"Mocca binary not found in {mocca_binary_path=}")
             exit(1)
@@ -140,43 +237,62 @@ def moccarun(path='.', make_path=None, commit=None, ref_dir=None, mocca_binary='
     # SLURM
     logger.info("Updating slurm script")
 
-    sed_cmd_l = [
-        f"s/#SBATCH -J .*/#SBATCH -J {path.name}/",
-        f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={user_email}/"
-        ]
+    set_moccaslurm(path / "mocca.slurm", job_name=path.name, mail_user=user_email, partition=partition, escape_bin_restart=escape_bin_restart)
+
+#    sed_cmd_l = [
+#        f"s/#SBATCH -J .*/#SBATCH -J {path.name}/",
+#        f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={user_email}/"
+#        ]
+#    if partition is not None:
+#        assert (path / 'mocca.slurm').is_file(), "partition provided but mocca.slurm missing!"
+#        if partition == 'short':
+#            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
+#            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
+#            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p short/")
+#        elif partition == 'long':
+#            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=336:00:00/")
+#            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
+#            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p long/")
+#        elif partition == 'bigmem':
+#            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=168:00:00/")
+#            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=5999MB/")
+#            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p bigmem/")
+#        else:
+#            logger.error("Unsupported partition type! Exiting...")
+#            exit(1)
+#    
+#    if (path / 'mocca.slurm').is_file():
+#        sed_cmd = ';'.join(sed_cmd_l)
+#        run(f'sed -i "{sed_cmd}" {path/"mocca.slurm"}')
+#    else:
+#        logger.warning('macca.slurm missing!')
+#
+
+    # Updating the runmaxcpu parameter for partition
+    runmaxcpu_frac = 0.9  # fraction of partitions max time at which the code is gently stopped (for restarts)
     if partition is not None:
-        assert (path / 'mocca.slurm').is_file(), "partition provided but mocca.slurm missing!"
         if partition == 'short':
-            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
-            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
-            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p short/")
+            set_moccaini(path / "mocca.ini", runmaxcpu = int(runmaxcpu_frac * 2160))
         elif partition == 'long':
-            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=336:00:00/")
-            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
-            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p long/")
+            set_moccaini(path / "mocca.ini", runmaxcpu = int(runmaxcpu_frac * 20160))
         elif partition == 'bigmem':
-            sed_cmd_l.append(f"s/#SBATCH --time=.*/#SBATCH --time=168:00:00/")
-            sed_cmd_l.append(f"s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=5999MB/")
-            sed_cmd_l.append(f"s/#SBATCH -p .*/#SBATCH -p bigmem/")
+            set_moccaini(path / "mocca.ini", runmaxcpu = int(runmaxcpu_frac * 10080))
         else:
-            logger.error("Unsupported partition type! Exiting...")
+            logger.error(f"Unsupported partition type! {partition=}")
             exit(1)
-    
-    if (path / 'mocca.slurm').is_file():
-        sed_cmd = ';'.join(sed_cmd_l)
-        myrun(f'sed -i "{sed_cmd}" {path/"mocca.slurm"}')
-    else:
-        logger.warning('macca.slurm missing!')
+
 
     if not dry_run:
         if no_slurm:
-            myrun(f"(cd {path} && ./mocca > zzz)")
+            run(f"(cd {path} && ./mocca > zzz)")
         else:
-            myrun(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
+            p = run(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
+            assert p.returncode == 0, "cannot submit slurm job:\n{p.args=}\n{p.strerr=}"
+            logger.info(f"{p.stdout.decode('utf8').strip()}")
     else:
         logger.info("dry run finished")
 
-def make_mocca(path, clean=False, size=None):
+def make_mocca(path, opts={}):
     """ Compiles MOCCA code
 
     Applies changes to internal params if needed 
@@ -184,31 +300,49 @@ def make_mocca(path, clean=False, size=None):
     CHANGELOG: changes to Mcluster/main.c are no longer needed with the new code
 
     Args:
-        size (str): "small", "large" or None (default) - changes params.h and Mcluster/main.c to account for small or large memorry usageg
+        path (Path | str): path to src (see also 'find' option below)
+        opts (List[str]): options for compilation
+            clean - do cleaning before compilation
+            find - find the MOCCA's src directory in upper hierarchy of folders
+            small | large - changes params.h to account for small or large memory usage (use only one!)
     """
+    available_sizes = {'small', 'large'}  # set of available sizes 
+    known_opts = available_sizes | {'find', 'clean'}
+
+    opts = set(opts)
+    assert len(unknown_opts := opts - known_opts) < 1, f"Unknown options: {unknown_opts=}"
+    
+    path = fix_path(path)
+
+    if 'find' in opts:
+        path = find_mocca_src_path(path)
+
+    size = len(sizes := {'small','large'}.intersection(opts)) > 0 and sizes.pop() or None
     if size is not None:
         if size == "small":
-            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/"
+            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]\+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/"
 #            MC_main_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/"
         elif size == "large":
-            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/"
+            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]\+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/"
 #            MC_main_sed_cmd = f"s/int NMAX = [0-9]\+;/int NMAX = 5200000;/"
         else:
             logger.error("wrong value of size in make_mocca(): {size=}")
             exit(0)
-        myrun(f'sed -i "{MOCCA_params_sed_cmd}" {path / "MOCCA/params.h"}')
-#       myrun(f'sed -i "{MC_main_sed_cmd}" {path / "Mcluster/main.c"}')
+        run(f'sed -i "{MOCCA_params_sed_cmd}" {path / "MOCCA/params.h"}')
+#       run(f'sed -i "{MC_main_sed_cmd}" {path / "Mcluster/main.c"}')
 
     cmd = f"(cd {path} &&"
-    if clean:
+    if 'clean' in opts:
         cmd += " make clean &&"
     cmd += " make debug)"
-    myrun(cmd)
+    run(cmd, capture_output=False)
 
 def parse_args():
 
     # Create the argument parser
-    parser = ArgumentParser(description=""" Utility for running mocca code
+    parser = ArgumentParser(description=f""" Utility for running mocca code
+
+            VERSION: {__VERSION__}
 
             TODO: add option to test_snapshots 
             """)
@@ -235,6 +369,7 @@ def parse_args():
     parser.add_argument('--partition', type=str, choices=['short','long', 'bigmem'], default=None, help='slurm partition name (default: not change)')
 
     # EXECUTION
+    parser.add_argument('--escape-bin-restart', action='store_true', help='calculate escapers evolution on a calculated simulation')
     parser.add_argument('--wait', action='store_true', help='wait for simulation to finish (e.g. when used in a pipe)')
     parser.add_argument('--dry-run', action='store_true', help='path to dirrectory with mocca.ini')
 
@@ -261,7 +396,7 @@ def main():
     # Start a grid of simulations
     if args.grid is not None:
         if len(args.paths)!=1:
-            logger.error(f"paths must be a sigle Path for '--grid' (len(paths)={len(args.paths)})")
+            logger.error(f"paths must be a sigle Path for '--grid' ({len(args.paths)=})")
             return 1
         grid_path = args.paths[0]
         grid = args.grid
@@ -286,7 +421,10 @@ def main():
 
         if run_args.make is not None:
             logger.debug(f'make: {run_args.make=}')
-            make_mocca(run_args.path, clean=('clean' in run_args.make), size=(((re_size:=re.search('(small|large)', run_args.make)) is not None) and re_size.group(0) or None))
+            make_args = run_args.make.split(',')
+            logger.debug(f'{make_args=}')
+            make_mocca(run_args.path, opts=make_args)
+            #make_mocca(run_args.path, clean=('clean' in make_args), size=(((re_size:=re.search('(small|large)', run_args.make)) is not None) and re_size.group(0) or None), find=('find' in make_args))
             continue  # FIXME  for the current moment I dont allow for make and run at the same time; we need to add looking for the src in the upper folder hierarchy
 
         moccarun(**vars(run_args))

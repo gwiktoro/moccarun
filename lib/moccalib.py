@@ -109,24 +109,28 @@ def read_snapshot(path, tsnap_range=None):
     if tsnap_range is None:
         tsnap_range = [-np.inf, np.inf]
     
+    def data_snap2df(data_snap, names, tsnap):
+        return (pd.DataFrame(data_snap, 
+                    columns=names
+                    )
+                    .assign(tsnap=tsnap)
+                    .apply(pd.to_numeric, downcast='integer')
+                )
+
     with open(path, 'r') as f:
 
         names = read_header(path).name.rename(None)
 
-        df_l = []
+        #df_l = []
         data_snap = []
         while line := f.readline():
             if line[0] == '#':  # skipping header lines
                 continue
             if '###' in line:
                 if len(data_snap)>0:
-                    df = (pd.DataFrame(data_snap, 
-                                             columns=names
-                                            )
-                                .assign(tsnap=tsnap)
-                          )
 
-                    df_l.append(df)
+                    #df_l.append(df)
+                    yield data_snap2df(data_snap, names, tsnap)
 
                 tsnap = float(line.split()[1]) 
                 data_snap = []
@@ -134,10 +138,14 @@ def read_snapshot(path, tsnap_range=None):
                 if tsnap_range[0]<=tsnap<tsnap_range[1]:
                     data_snap.append(line.split())
 
-    return (pd.concat(df_l)
-            .apply(pd.to_numeric, downcast='integer')
-            .reset_index(drop=True)
-           )
+        if len(data_snap)>0:
+
+            yield data_snap2df(data_snap, names, tsnap)
+
+#    return (pd.concat(df_l)
+#            .apply(pd.to_numeric, downcast='integer')
+#            .reset_index(drop=True)
+#           )
 
 #### REMOTE COMMANDS
 
