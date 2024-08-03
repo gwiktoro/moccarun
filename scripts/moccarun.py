@@ -160,7 +160,7 @@ def set_moccaslurm(path, job_name=None, mail_user=None, partition=None, escape_b
     sed_cmd = ';'.join(sed_cmd_l)
     run(f'sed -i "{sed_cmd}" {path}')
 
-def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, ref_dir=None, mocca_binary='FIND', moccaini=None, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, no_slurm=False, escape_bin_restart=False, **kwargs):
+def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, ref_dir=None, mocca_binary='FIND', moccaini={}, user_email='gwiktoro@camk.edu.pl', partition=None, wait=False, dry_run=False, no_slurm=False, escape_bin_restart=False, moccainipath=None, **kwargs):
 
     logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
 
@@ -200,6 +200,8 @@ def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, r
     if ref_dir is not None:
         run(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {path}")  # '-f' is necessary for overwriting existing files
                                                                                     # othewrise the command fails
+    if moccainipath is not None:
+        run(f"cp -f {moccainipath} {path}")
 
 
     set_moccaini(path / 'mocca.ini', **moccaini)
@@ -292,7 +294,7 @@ def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, r
     else:
         logger.info("dry run finished")
 
-def make_mocca(path, opts={}):
+def make_mocca(path, opts=[]):
     """ Compiles MOCCA code
 
     Applies changes to internal params if needed 
@@ -351,9 +353,10 @@ def parse_args():
     parser.add_argument('paths', type=Path, default=[Path('.')], nargs='*', help='paths to directories with mocca.ini and mocca.slurm')
 
     # MOCCA BINARY
-    parser.add_argument('--make', type=str, nargs='?', default=None, const='clean', help="clean,small,large")
+    parser.add_argument('--make', type=str, nargs='?', default=None, const='', help="clean,small,large")
     parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
     parser.add_argument('--ref-dir', type=str, default=None, help='Directory with reference files (mocca.ini, mocca.slurm, *nbody.dat)')
+    parser.add_argument('--moccainipath', type=Path, default=None, help='path to mocca.ini file. Will be copied to simulation directory')
     parser.add_argument('--mocca-binary', action='store', type=str, default='FIND', help="Defines how to obtain the `mocca` binary file. 'FIND' (default) - look for mocca binary in upper directories; 'KEEP' - keep the current `mocca` binary (must be present); otherwise, treated as path to the mocca binary or the folder where it's located")
 #    parser.add_argument('--mocca-binary-path', type=Path, default=None, help='path to mocca binary. If not provided parent directories would be searched')
 
@@ -361,7 +364,7 @@ def parse_args():
     parser.add_argument('--moccaini', type=json.loads, default={}, help="arguments to change in mocca.ini")
 
     # GRID
-    parser.add_argument('--grid', type=json.loads, default=None, help="JSON string defining the simulation's grid")
+    parser.add_argument('--grid', type=str, default=None, help="JSON string defining the simulation's grid")
 
     # SLURM
     parser.add_argument('--no-slurm', action='store_true', help="do not send slurm job, but execute code normally")
@@ -399,9 +402,19 @@ def main():
             logger.error(f"paths must be a sigle Path for '--grid' ({len(args.paths)=})")
             return 1
         grid_path = args.paths[0]
-        grid = args.grid
+        grid_json = args.grid
         del args.grid
         del args.paths
+
+        try:
+            if Path(grid_json).exists():
+                with open(grid_json,'r') as fp:
+                    grid = json.load(fp)
+            else:
+                grid = json.loads(grid_json)
+        except:
+            logger.error(f"Cannot read grid data {grid_json=}")
+            return 1
         
         for vals in product(*grid.values()):
             args.moccaini = dict(zip(grid.keys(), vals))
@@ -421,7 +434,7 @@ def main():
 
         if run_args.make is not None:
             logger.debug(f'make: {run_args.make=}')
-            make_args = run_args.make.split(',')
+            make_args = [opt for opt in run_args.make.split(',') if opt != '']
             logger.debug(f'{make_args=}')
             make_mocca(run_args.path, opts=make_args)
             #make_mocca(run_args.path, clean=('clean' in make_args), size=(((re_size:=re.search('(small|large)', run_args.make)) is not None) and re_size.group(0) or None), find=('find' in make_args))

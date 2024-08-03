@@ -18,6 +18,25 @@ import io
 import logging
 logger = logging.getLogger(__name__)
 
+def get_names_for_detailed_output(write_stm=None):
+
+	if write_stm is None:
+		write_stm = """idbin, id1, id2, j1, j2, tphys, dtm,                                                                                                     & age, epoch(1),                                                                                                                                         
+			 & epoch(2), kstar(1), kstar(2), mass(1), mass(2), sep, ecc,                                                                                              
+			 &       rad(1), rad(2), lumin(1), lumin(2), massc(1), massc(2),                                                                                          
+			 &       radc(1), radc(2), menv(1), menv(2), renv(1), renv(2),                                                                                            
+			 &       ospin(1), ospin(2), dmt(1), dmt(2), dmr(1), dmr(2), rol(1),                                                                                      
+			 &       rol(2),dmdt(1), dmdt(2), dm1, dm2 , tb, Lx, Mdot_RLOF
+		"""
+
+	return (re.sub("[^(\w]\d+[^)]", "", write_stm)  # remove line numbers
+			 .replace('&', '')  # remove continuation marks
+			 .replace(',', ' ')  # use only whitespaces as delimiters
+			 .replace('(','_')
+			 .replace(')','')
+			 .split()
+			)
+
 def read_header(path):
     """Reads header information from system.dat or snapshot.dat
     
