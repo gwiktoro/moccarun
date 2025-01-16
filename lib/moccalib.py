@@ -21,12 +21,12 @@ logger = logging.getLogger(__name__)
 def get_names_for_detailed_output(write_stm=None):
 
 	if write_stm is None:
-		write_stm = """idbin, id1, id2, j1, j2, tphys, dtm,                                                                                                     & age, epoch(1),                                                                                                                                         
+		write_stm = """label, idbin, id1, id2, j1, j2, tphys, dtm,                                                                                                     & age, epoch(1),                                                                                                                                         
 			 & epoch(2), kstar(1), kstar(2), mass(1), mass(2), sep, ecc,                                                                                              
 			 &       rad(1), rad(2), lumin(1), lumin(2), massc(1), massc(2),                                                                                          
 			 &       radc(1), radc(2), menv(1), menv(2), renv(1), renv(2),                                                                                            
 			 &       ospin(1), ospin(2), dmt(1), dmt(2), dmr(1), dmr(2), rol(1),                                                                                      
-			 &       rol(2),dmdt(1), dmdt(2), dm1, dm2 , tb, Lx, Mdot_RLOF
+			 &       rol(2),dmdt(1), dmdt(2), dm1, dm2 , tb, Lx, Mdot_RLOF, Bi(1), Bi(2)
 		"""
 
 	return (re.sub("[^(\w]\d+[^)]", "", write_stm)  # remove line numbers
@@ -165,6 +165,36 @@ def read_snapshot(path, tsnap_range=None):
 #            .apply(pd.to_numeric, downcast='integer')
 #            .reset_index(drop=True)
 #           )
+
+
+def to_numeric(s):
+    """ avoid deprication error from pd when non-convertable string is provided """
+    try:
+        return pd.to_numeric(x, downcast='integer')
+    except:
+        return s
+
+def read_history(path):
+    """ reads history files provided through `mm history <id>` 
+
+    Args:
+        path (str | Path): path to history-<id>.dat file
+    Returns:
+        dict: params read from the file header
+        pd.DataFrame: history data with attached column names from header
+    """
+    
+    params = {}
+    with open(path, 'r') as fp:
+        while (line := fp.readline())[0]=='#':
+            if (m := re.match("# *(\w+) *= *(\w+)", line)) is not None:
+                params[m[1]] = to_numeric(m[2])
+            header_line = line
+    names = header_line.split()[1:]
+
+    history = pd.read_csv(path, names=names, sep='\s+', comment='#')
+
+    return params, history
 
 #### REMOTE COMMANDS
 
