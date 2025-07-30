@@ -2,6 +2,7 @@
 
 __VERSION__ = '240508'
 
+import os
 from copy import copy
 
 from argparse import ArgumentParser
@@ -94,8 +95,9 @@ def run(cmd, **kwargs):
     if 'capture_output' not in kwargs.keys():
         kwargs['capture_output'] = True
     
-    logger.debug(f"{cmd=}")
+    logger.debug(rf"{cmd=}")
     logger.debug(f"{kwargs=}")
+    print(cmd)
     p = subprocess.run(cmd, **kwargs)
     return p
 
@@ -352,6 +354,8 @@ def parse_args():
     # PATH
     parser.add_argument('paths', type=Path, default=[Path('.')], nargs='*', help='paths to directories with mocca.ini and mocca.slurm')
 
+    parser.add_argument('--grep', type=str, default=None, help='performs grep on MOCCA code files')
+
     # MOCCA BINARY
     parser.add_argument('--make', type=str, nargs='?', default=None, const='', help="clean,small,large")
     parser.add_argument('--commit', type=str, default=None, help="Commit for the code to test (will affect the code directory!")
@@ -431,6 +435,17 @@ def main():
         run_args = copy(args)
         run_args.path = rp
         logger.debug(f"{run_args=}")
+
+        if run_args.grep is not None:
+            print("GREP")
+            path = find_mocca_src_path(run_args.path)
+            p = run(f"""find {path} -type f \( -name "*.f" -o -name "*.f90" -o -name "*.f95" -o -name "*.f03" -o -name "*.f08" -o -name "*.h" \) -print0 | xargs -0 grep -n {run_args.grep} """)
+            if p.returncode == 0:
+                print(p.stdout.decode('utf8'))
+            else:
+                print(p.stderr.decode('utf8'))
+            continue
+        
 
         if run_args.make is not None:
             logger.debug(f'make: {run_args.make=}')
