@@ -118,8 +118,66 @@ def read_mocca_file(path, names=None, chunksize=None):
     #     df.columns = df.columns.map(lambda x: x+1)
         
     return df
+def read_snapshot(path, tsnap_range=None, chunk_size=10000):
+    """Reads snapshot.dat file with memory-efficient chunking
+    
+    tsnap_range - specifies a range List[2] of snapshot times to read (left inclusive)
+    chunk_size - number of rows to process at once (default: 10000)
+    """
+    
+    if tsnap_range is None:
+        tsnap_range = [-np.inf, np.inf]
+    
+    def process_chunk(chunk_data, names, tsnap):
+        """Process a chunk of data into DataFrame"""
+        if not chunk_data:
+            return None
+        return (pd.DataFrame(chunk_data, columns=names)
+                .assign(tsnap=tsnap)
+                .apply(pd.to_numeric, downcast='integer'))
+    
+    with open(path, 'r') as f:
+        names = read_header(path).name.rename(None)
+        
+        chunk_data = []
+        tsnap = None
+        
+        for line in f:
+            if line[0] == '#':  # skip header lines
+                continue
+                
+            if '###' in line:
+                # Yield remaining chunk data before starting new snapshot
+                if chunk_data and tsnap is not None:
+                    df = process_chunk(chunk_data, names, tsnap)
+                    if df is not None:
+                        yield df
+                
+                tsnap = float(line.split()[1])
+                if tsnap > tsnap_range[1]:
+                    # do not process further if found the tsnap is already larger then max
+                    return
 
-def read_snapshot(path, tsnap_range=None):
+                chunk_data = []
+            else:
+                # Only process if within time range
+                if tsnap is not None and tsnap_range[0] <= tsnap < tsnap_range[1]:
+                    chunk_data.append(line.split())
+                    
+                    # Yield chunk when it reaches chunk_size
+                    if len(chunk_data) >= chunk_size:
+                        df = process_chunk(chunk_data, names, tsnap)
+                        if df is not None:
+                            yield df
+                        chunk_data = []
+        
+        # Yield final chunk
+        if chunk_data and tsnap is not None:
+            df = process_chunk(chunk_data, names, tsnap)
+            if df is not None:
+                yield df
+
+def read_snapshot_old250820(path, tsnap_range=None):
     """Reads snapshot.dat file
     
     tsnap_range - specifies a range List[2] of snapshot times to read (left inclusive)
