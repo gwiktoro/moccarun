@@ -15,9 +15,11 @@ import re
 
 from itertools import product
 
-import logging
-logging.basicConfig(level='INFO', format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
-logger = logging.getLogger(__name__)
+#import logging
+#logging.basicConfig(level='INFO', format='%(asctime)s|%(levelname)s|%(name)s|%(funcName)s|%(lineno)s|%(message)s')
+#logger = logging.getLogger(__name__)
+
+from loguru import logger
 
 """
 
@@ -392,7 +394,10 @@ def main():
 
     args = parse_args()
 
-    logger.parent.setLevel(args.logLevel)
+    logger.remove()
+    logger.add('sys.stderr', level=args.logLevel)
+    
+    #logger.parent.setLevel(args.logLevel)
     logger.debug(f"{args=}")
     del args.logLevel
 

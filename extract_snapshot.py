@@ -34,28 +34,7 @@ def main():
     
     logger.debug(f"Reading snapshot file: {args.path}")
     
-    # Read snapshot data as generator
-    snapshot_generator = ml.read_snapshot(args.path, tsnap_range=tsnap_range)
-    
-    # Handle first dataframe with header
-    try:
-        logger.debug("Processing first dataframe with header")
-        first_df = next(snapshot_generator)
-        logger.debug(f"First dataframe shape: {first_df.shape}")
-        first_df.to_csv(sys.stdout, index=False, header=True)
-        
-        # Process remaining dataframes without header
-        df_count = 1
-        for df in snapshot_generator:
-            df_count += 1
-            logger.debug(f"Processing dataframe {df_count}, shape: {df.shape}")
-            df.to_csv(sys.stdout, index=False, header=False)
-        
-        logger.debug(f"Finished processing {df_count} dataframes")
-    except StopIteration:
-        logger.debug("No data to process")
-        pass
-
+    ml.extract_snapshot(args.path, tsnap_range=tsnap_range, chunk=10000)
 
 if __name__ == '__main__':
     main()

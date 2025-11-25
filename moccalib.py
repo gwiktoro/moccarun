@@ -177,6 +177,30 @@ def read_snapshot(path, tsnap_range=None, chunk_size=10000):
             if df is not None:
                 yield df
 
+def extract_snapshot(snapshot_path, output=sys.stdout, **kwargs):
+    """ kwargs passed to read_snapshot """
+    # Read snapshot data as generator
+    snapshot_generator = read_snapshot(snapshot_path, **kwargs)
+    
+    # Handle first dataframe with header
+    try:
+        logger.debug("Processing first dataframe with header")
+        first_df = next(snapshot_generator)
+        logger.debug(f"First dataframe shape: {first_df.shape}")
+        first_df.to_csv(sys.stdout, index=False, header=True)
+        
+        # Process remaining dataframes without header
+        df_count = 1
+        for df in snapshot_generator:
+            df_count += 1
+            logger.debug(f"Processing dataframe {df_count}, shape: {df.shape}")
+            df.to_csv(sys.stdout, index=False, header=False)
+        
+        logger.debug(f"Finished processing {df_count} dataframes")
+    except StopIteration:
+        logger.debug("No data to process")
+        pass
+
 def read_snapshot_old250820(path, tsnap_range=None):
     """Reads snapshot.dat file
     
