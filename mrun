@@ -1,0 +1,4 @@
+#!/bin/bash
+# wrapper script
+PYTHONPATH=~/moccarun:$PYTHONPATH ~/moccarun/.venv/bin/python -m moccarun "$@"
+

@@ -1,9 +1,15 @@
 [project]
-name = "moccalib"
-version = "0.1.0"
-description = "Add your description here"
+name = "moccarun"
+version = "0.2.0"
+description = "MOCCA helper utils and automation script"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "loguru>=0.7.3",
 ]
+
+# Define the console script entry point
+[project.scripts]
+# Left side: The command you want to use (mr)
+# Right side: The Python function to call (moccarun.py:main)
+mrun = "moccarun:main"

@@ -3,6 +3,7 @@
 __VERSION__ = '240508'
 
 import os
+import sys
 from copy import copy
 
 from argparse import ArgumentParser
@@ -70,6 +71,7 @@ def find_mocca_src_path(path):
     path = fix_path(path)
     current = path
     while len(current.parents)>0:
+        logger.debug(f'{current=}')
         if current.stem == 'src' and (current / 'mocca-default-2pop.ini').is_file() and (current / 'MOCCA').is_dir() and (current / 'bse').is_dir():
             mocca_src_path = current
             break
@@ -115,11 +117,11 @@ def set_moccaini(path, **kwargs):
     assert path.is_file(), f"not a file: {path=}"
 
     for k, v in kwargs.items():
-        p = run(f'grep "^{k}\s*=\s*[^#]\+" {path}')
+        p = run(rf'grep "^{k}\s*=\s*[^#]\+" {path}')
         if p.returncode == 1:
             logger.error(f"key not found in mocca.ini: {k=}")
             exit(1)
-        p_sed = run(f'sed -i "s/^{k}\s*=\s*.*/{k} = {v}/" {path}')
+        p_sed = run(rf'sed -i "s/^{k}\s*=\s*.*/{k} = {v}/" {path}')
         assert p_sed.returncode == 0, "sed run incorrectly! {p_sed.args=}"
         logger.info(f"{p.stdout.decode('utf8').strip()} -> {v}")
 
@@ -157,9 +159,9 @@ def set_moccaslurm(path, job_name=None, mail_user=None, partition=None, escape_b
             exit(1)
     
     if escape_bin_restart:
-        sed_cmd_l.append(f"s/^.\/mocca.*/.\/mocca --escape-bin-restart > zzz-escape-bin-restart/")
+        sed_cmd_l.append(rf"s/^.\/mocca.*/.\/mocca --escape-bin-restart > zzz-escape-bin-restart/")
     else:
-        sed_cmd_l.append(f"s/^\.\/mocca.*/.\/mocca > zzz/")
+        sed_cmd_l.append(rf"s/^\.\/mocca.*/.\/mocca > zzz/")
 
     sed_cmd = ';'.join(sed_cmd_l)
     run(f'sed -i "{sed_cmd}" {path}')
@@ -170,6 +172,7 @@ def moccarun(path=Path('.'), make_path=None, commit=None, mocca_src_path=None, r
 
     assert commit is None or (commit is not None and make_path is not None), "make_path has to be provided together with commit"
 
+    # FIXME: use mocca_make for this not raw code
     if make_path is not None:
         cmd = f"(cd {make_path} && "
         if commit is not None:
@@ -326,10 +329,10 @@ def make_mocca(path, opts=[]):
     size = len(sizes := {'small','large'}.intersection(opts)) > 0 and sizes.pop() or None
     if size is not None:
         if size == "small":
-            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]\+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/"
+            MOCCA_params_sed_cmd = rf"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]\+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/"
 #            MC_main_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=2200000/"
         elif size == "large":
-            MOCCA_params_sed_cmd = f"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]\+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/"
+            MOCCA_params_sed_cmd = rf"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]\+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/"
 #            MC_main_sed_cmd = f"s/int NMAX = [0-9]\+;/int NMAX = 5200000;/"
         else:
             logger.error("wrong value of size in make_mocca(): {size=}")
@@ -383,7 +386,7 @@ def parse_args():
     parser.add_argument('--dry-run', action='store_true', help='path to dirrectory with mocca.ini')
 
     # MISC
-    parser.add_argument('--logLevel', action='store', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], default='WARNING')
+    parser.add_argument('--logLevel', action='store', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], help="set logging level (default WARNING)", default='WARNING')
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -395,7 +398,7 @@ def main():
     args = parse_args()
 
     logger.remove()
-    logger.add('sys.stderr', level=args.logLevel)
+    logger.add(sys.stderr, level=args.logLevel)
     
     #logger.parent.setLevel(args.logLevel)
     logger.debug(f"{args=}")
@@ -444,11 +447,12 @@ def main():
         if run_args.grep is not None:
             print("GREP")
             path = find_mocca_src_path(run_args.path)
-            p = run(f"""find {path} -type f \( -name "*.f" -o -name "*.f90" -o -name "*.f95" -o -name "*.f03" -o -name "*.f08" -o -name "*.h" \) -print0 | xargs -0 grep -n {run_args.grep} """)
+            p = run(rf"""find {path} -type f \( -name "*.f" -o -name "*.f90" -o -name "*.f95" -o -name "*.f03" -o -name "*.f08" -o -name "*.h" \) -print0 | xargs -0 grep -n {run_args.grep} """)
             if p.returncode == 0:
                 print(p.stdout.decode('utf8'))
             else:
                 print(p.stderr.decode('utf8'))
+
             continue
         
 
@@ -456,7 +460,10 @@ def main():
             logger.debug(f'make: {run_args.make=}')
             make_args = [opt for opt in run_args.make.split(',') if opt != '']
             logger.debug(f'{make_args=}')
-            make_mocca(run_args.path, opts=make_args)
+            logger.debug(f"{run_args.path=}")
+            mocca_src_path = find_mocca_src_path(run_args.path)
+            logger.debug(f"{mocca_src_path=}")
+            make_mocca(mocca_src_path, opts=make_args)
             #make_mocca(run_args.path, clean=('clean' in make_args), size=(((re_size:=re.search('(small|large)', run_args.make)) is not None) and re_size.group(0) or None), find=('find' in make_args))
             continue  # FIXME  for the current moment I dont allow for make and run at the same time; we need to add looking for the src in the upper folder hierarchy
 
