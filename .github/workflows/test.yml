@@ -22,6 +22,9 @@ jobs:
       - name: Install mrun
         run: uv tool install -e .
 
+      - name: Install pytest
+        run: pip install pytest
+
       - name: Check version
         run: mrun --version
 
