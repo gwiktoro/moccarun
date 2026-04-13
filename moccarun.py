@@ -348,7 +348,7 @@ def make_mocca(path, opts=[]):
     run(cmd, capture_output=False)
 
 
-def parse_args():
+def parse_args(args=None):
     # Create the argument parser
     parser = ArgumentParser(
         description=f"""MOCCA simulation runner - compile and run MOCCA code on SLURM clusters.
@@ -462,7 +462,7 @@ VERSION: {__VERSION__}
     )
 
     # Parse the command-line arguments
-    args = parser.parse_args()
+    args = parser.parse_args(args)
 
     return args
 

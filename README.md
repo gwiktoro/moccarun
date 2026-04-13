@@ -58,3 +58,4 @@ import moccalib as ml
 - [ ] Merge `extract_snapshot.py` into main CLI
 - [ ] Merge `test_snapshots.py` into main CLI
 - [ ] Validate `moccaini` keys against known parameters
+- [ ] Add GitHub Actions CI (for public releases only - not available for private repos)
