@@ -1,24 +1,60 @@
-# MOCCALIB repo
+# MOCCARUN
 by Grzegorz Wiktorowicz
 
-## moccalib.py
-main library file. Intended to be included from python scripts/notebooks
+MOCCA simulation runner for SLURM clusters.
 
-Contains helper funcitons for dealing with mocca output files and other.
+## Installation
 
-## moccarun.py
-main execution script intended to be a swiss knife for all the functionalities. 
-should be linked to PATH directory
+Requires Python 3.13+.
 
-## extract_snapshot.py
-Script to extract specific snapshots from snapshot.dat files. Can extract multiple snapshots to one file and appends tsnap variable with snapshot time 
+```bash
+# 1. Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-## Running multiple moccaruns with `find`
+# 2. Install mrun (non-editable, stable)
+uv tool install moccarun
 
-    cmd='cd $0; moccarun $(basename $PWD)_no_new_features --ref-dir . --moccaini '"'"'{"tdelay_fraction": 0.0, "iagb": 0, "rtid_fac": 1.0, "ABBAS_FIX_SUPEDD": 1, "ABBAS_DTINTER_FIX_SEMI": 1, "ABBAS_FIX_GETTB": 1, "tdelay": 0.0}'"'"' --logLevel INFO --dry-run'  # notice how the single quotes were escaped!
-    find . -maxdepth 1 -type d -name 'n*' -exec bash -c "$cmd" {} \;
+# 3. Verify
+mrun --version
+```
 
-## Load libraries in scripts/notebooks
+## Quick Start
 
-    sys.path.append('<PATH_TO_MOCCALIB_DIR>')
-    import moccalib as ml
+```bash
+# Run simulation
+mrun path/to/simulation --partition short
+
+# Run with custom parameters
+mrun path/to/simulation --moccaini '{"tdelay_fraction": 0.0}'
+
+# Compile code first
+mrun --make clean,large path/to/simulation
+
+# Parameter sweep
+mrun --grid '{"nbody": [1000, 2000]}' --ref-dir path/to/reference
+```
+
+## Email
+SLURM notifications use email auto-detected in this priority:
+1. `--user-email` CLI arg
+2. `MOCCARUN_EMAIL` env var
+3. `~/.gitconfig` user.email
+4. `EMAIL` env var
+
+---
+
+## License
+MIT License
+
+## Library
+```python
+import moccalib as ml
+```
+
+---
+
+## TODO / Known Issues
+
+- [ ] Merge `extract_snapshot.py` into main CLI
+- [ ] Merge `test_snapshots.py` into main CLI
+- [ ] Validate `moccaini` keys against known parameters

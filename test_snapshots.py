@@ -48,7 +48,6 @@ def get_system(im, snapshot_refactoring, snapshot_comparison):
 
 if __name__ == "__main__":
     
-    import subprocess
     
     from argparse import ArgumentParser
     

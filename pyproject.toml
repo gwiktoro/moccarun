@@ -1,15 +1,20 @@
 [project]
 name = "moccarun"
-version = "0.2.0"
-description = "MOCCA helper utils and automation script"
+version = "1.0.0"
+description = "MOCCA simulation runner for SLURM clusters"
 readme = "README.md"
 requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Grzegorz Wiktorowicz" }
+]
+keywords = ["mocca", "slurm", "simulation", "astronomy", "nbody"]
 dependencies = [
     "loguru>=0.7.3",
 ]
 
-# Define the console script entry point
+[tool.setuptools]
+py-modules = ["moccarun"]
+
 [project.scripts]
-# Left side: The command you want to use (mr)
-# Right side: The Python function to call (moccarun.py:main)
 mrun = "moccarun:main"
