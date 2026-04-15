@@ -1,0 +1,31 @@
+[project]
+name = "moccarun"
+version = "1.0.0"
+description = "MOCCA simulation runner for SLURM clusters"
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [
+    { name = "Grzegorz Wiktorowicz" }
+]
+keywords = ["mocca", "slurm", "simulation", "astronomy", "nbody"]
+dependencies = [
+    "loguru>=0.7.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.setuptools]
+py-modules = ["moccarun"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[project.scripts]
+mrun = "moccarun:main"

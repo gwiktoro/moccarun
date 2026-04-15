@@ -1,0 +1,33 @@
+name: Test
+
+on:
+  push:
+    branches: [master, devel]
+  pull_request:
+    branches: [master, devel]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Check version
+        run: uv run moccarun.py --version
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Tool install
+        run: uv tool install .
+
+      - name: Tool version check
+        run: mrun --version
+

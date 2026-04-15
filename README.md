@@ -1,24 +1,33 @@
-# MOCCALIB repo
-by Grzegorz Wiktorowicz
+# MOCCARUN
 
-## moccalib.py
-main library file. Intended to be included from python scripts/notebooks
+MOCCA simulation runner for SLURM clusters.
 
-## moccarun.py
-main execution script intended to be a swiss knife for all the functionalities. 
-should be linked to PATH directory
+## Installation
 
-## Other script
-test scripts before implementaiton to moccalib.py or moccarun.py
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install moccarun
+```
 
+## Quick Start
 
+```bash
+mrun path/to/simulation --partition short
+mrun path/to/simulation --moccaini '{"tdelay_fraction": 0.0}'
+mrun --make clean,large path/to/simulation
+mrun --grid '{"nbody": [1000, 2000]}' --ref-dir path/to/reference
+```
 
-## Running multiple moccaruns with `find`
+## Email
 
-    cmd='cd $0; moccarun $(basename $PWD)_no_new_features --ref-dir . --moccaini '"'"'{"tdelay_fraction": 0.0, "iagb": 0, "rtid_fac": 1.0, "ABBAS_FIX_SUPEDD": 1, "ABBAS_DTINTER_FIX_SEMI": 1, "ABBAS_FIX_GETTB": 1, "tdelay": 0.0}'"'"' --logLevel INFO --dry-run'  # notice how the single quotes were escaped!
-    find . -maxdepth 1 -type d -name 'n*' -exec bash -c "$cmd" {} \;
+SLURM notifications use email auto-detected in this priority:
+1. `--user-email` CLI arg
+2. `MOCCARUN_EMAIL` env var
+3. `~/.gitconfig` user.email
+4. `EMAIL` env var
 
-## Load libraries
+---
 
-    sys.path.append('/home/gwiktoro/moccalib/lib/')
-    import moccalib as ml
+## License
+
+See [LICENSE](LICENSE) for details.
