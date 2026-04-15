@@ -12,21 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.13"
+          enable-cache: true
 
-      - name: Install uv
-        run: pip install uv
-
-      - name: Install mrun
-        run: uv tool install -e .
-
-      - name: Install pytest
-        run: pip install pytest
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
 
       - name: Check version
-        run: mrun --version
+        run: uv run mrun --version
 
       - name: Run tests
-        run: pytest -v
+        run: uv run pytest
