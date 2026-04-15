@@ -11,6 +11,7 @@ authors = [
 keywords = ["mocca", "slurm", "simulation", "astronomy", "nbody"]
 dependencies = [
     "loguru>=0.7.3",
+    "pytest>=9.0.3",
 ]
 
 [tool.setuptools]
