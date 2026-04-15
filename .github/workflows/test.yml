@@ -2,9 +2,9 @@ name: Test
 
 on:
   push:
-    branches: [master, main, devel]
+    branches: [master, devel]
   pull_request:
-    branches: [master, main, devel]
+    branches: [master, devel]
 
 jobs:
   test:
@@ -20,7 +20,14 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Check version
-        run: uv run mrun --version
+        run: uv run moccarun.py --version
 
       - name: Run tests
         run: uv run pytest
+
+      - name: Tool install
+        run: uv tool install moccarun
+
+      - name: Tool version check
+        run: mrun --version
+
