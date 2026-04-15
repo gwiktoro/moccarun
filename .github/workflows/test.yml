@@ -26,7 +26,7 @@ jobs:
         run: uv run pytest
 
       - name: Tool install
-        run: uv tool install --from .
+        run: uv tool install .
 
       - name: Tool version check
         run: mrun --version
