@@ -26,6 +26,13 @@ SLURM notifications use email auto-detected in this priority:
 3. `~/.gitconfig` user.email
 4. `EMAIL` env var
 
+## Development
+
+```bash
+uv sync --extra dev
+uv run pytest
+```
+
 ---
 
 ## License
