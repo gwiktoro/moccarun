@@ -13,6 +13,8 @@ from shutil import rmtree
 import subprocess
 import json
 
+import warnings
+
 from loguru import logger
 
 
@@ -50,10 +52,11 @@ def fix_path(path):
     return Path(path).absolute()
 
 
-def clean_dir(path, keep=[]):
+def clean_dir(path, keep=None):
     """Cleans the target directory from all files except those specified in `keep`"""
 
     path = fix_path(path)
+    keep = keep or []
 
     for item in path.iterdir():
         if item.name not in keep:
@@ -64,6 +67,19 @@ def clean_dir(path, keep=[]):
 
 
 def find_mocca_in_parents(path, require_src_stem=False):
+    """Walk up parent directories to find mocca binary.
+
+    Deprecated: Use find_mocca_binary() instead.
+
+    Args:
+        path: Starting path to search from
+        require_src_stem: If True, only match when parent stem is 'src'
+    """
+    warnings.warn(
+        "find_mocca_in_parents() is deprecated, use find_mocca_binary() instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     path = fix_path(path)
     parent_dir = path.parent
     while len(parent_dir.parents) > 0:
@@ -79,24 +95,64 @@ def find_mocca_in_parents(path, require_src_stem=False):
     return mocca_binary_path
 
 
-def find_mocca_src_path(path):
-    path = fix_path(path)
-    current = path
-    while len(current.parents) > 0:
-        logger.debug(f"{current=}")
-        if (
-            current.stem == "src"
-            and (current / "mocca-default-2pop.ini").is_file()
-            and (current / "MOCCA").is_dir()
-            and (current / "bse").is_dir()
-        ):
-            mocca_src_path = current
-            break
-        current = current.parent
-    else:
-        mocca_src_path = None
+def find_mocca_src_path(path=None):
+    """Find the MOCCA src/ directory using git repository root.
 
-    return mocca_src_path
+    Args:
+        path: Starting path (default: current directory)
+
+    Returns:
+        Path to src/ directory if valid, None otherwise
+    """
+    if path is None:
+        path = Path.cwd()
+    else:
+        path = fix_path(path)
+
+    p = run("git rev-parse --show-toplevel")
+    if p.returncode != 0:
+        return None
+
+    repo_root = Path(p.stdout.decode().strip())
+    src_path = repo_root / "src"
+
+    if (
+        src_path.is_dir()
+        and (src_path / "mocca-default-2pop.ini").is_file()
+        and (src_path / "MOCCA").is_dir()
+        and (src_path / "bse").is_dir()
+    ):
+        return src_path
+
+    return None
+
+
+def find_mocca_binary(path=None):
+    """Find the mocca binary in the git repo's src/ directory.
+
+    Uses find_mocca_src_path() to locate src/, then checks for mocca binary.
+
+    Args:
+        path: Starting path (default: current directory)
+
+    Returns:
+        Path to the mocca binary
+
+    Raises:
+        SystemExit: If binary is not found and no alternative is provided
+    """
+    src_path = find_mocca_src_path(path)
+    if src_path is not None:
+        mocca_binary = src_path / "mocca"
+        if mocca_binary.is_file():
+            return mocca_binary
+
+    logger.error(
+        "mocca binary not found in git repo's src/ directory. "
+        "Use --mocca-binary KEEP to keep the existing binary, "
+        "or --mocca-binary /path/to/mocca to specify a path."
+    )
+    exit(1)
 
 
 def run(cmd, **kwargs):
@@ -110,15 +166,12 @@ def run(cmd, **kwargs):
     Returns
         subprocess.CompletedProcess
     """
-    if "shell" not in kwargs.keys():
-        kwargs["shell"] = True
-
-    if "capture_output" not in kwargs.keys():
-        kwargs["capture_output"] = True
+    kwargs.setdefault("shell", True)
+    kwargs.setdefault("capture_output", True)
 
     logger.debug(rf"{cmd=}")
     logger.debug(f"{kwargs=}")
-    print(cmd)
+    logger.debug(cmd)
     p = subprocess.run(cmd, **kwargs)
     return p
 
@@ -129,6 +182,9 @@ def set_moccaini(path, **kwargs):
     Args:
         path (Path | str): path to mocca.ini file
         kwargs: key and values to update
+
+    Returns:
+        0 on success, 1 if a key was not found
     """
 
     path = fix_path(path)
@@ -138,10 +194,12 @@ def set_moccaini(path, **kwargs):
         p = run(rf'grep "^{k}\s*=\s*[^#]\+" {path}')
         if p.returncode == 1:
             logger.error(f"key not found in mocca.ini: {k=}")
-            exit(1)
+            return 1
         p_sed = run(rf'sed -i "s/^{k}\s*=\s*.*/{k} = {v}/" {path}')
         assert p_sed.returncode == 0, "sed run incorrectly! {p_sed.args=}"
         logger.info(f"{p.stdout.decode('utf8').strip()} -> {v}")
+
+    return 0
 
 
 def set_moccaslurm(
@@ -204,6 +262,7 @@ def moccarun(
     partition=None,
     wait=False,
     dry_run=False,
+    run_sim=False,
     no_slurm=False,
     escape_bin_restart=False,
     moccainipath=None,
@@ -246,14 +305,12 @@ def moccarun(
     if moccainipath is not None:
         run(f"cp -f {moccainipath} {path}")
 
-    set_moccaini(path / "mocca.ini", **moccaini)
+    if set_moccaini(path / "mocca.ini", **moccaini):
+        exit(1)
 
     if mocca_binary != "KEEP":
         if mocca_binary == "FIND":
-            mocca_binary_path = find_mocca_in_parents(path)
-            if mocca_binary_path is None:
-                logger.error("mocca binary not found in parent directories! Exiting...")
-                exit(1)
+            mocca_binary_path = find_mocca_binary(path)
         else:
             if not mocca_binary.endswith("/mocca"):
                 mocca_binary += "/mocca"
@@ -290,7 +347,7 @@ def moccarun(
             logger.error(f"Unsupported partition type! {partition=}")
             exit(1)
 
-    if not dry_run:
+    if run_sim:
         if no_slurm:
             run(f"(cd {path} && ./mocca > zzz)")
         else:
@@ -301,7 +358,7 @@ def moccarun(
         logger.info("dry run finished")
 
 
-def make_mocca(path, opts=[]):
+def make_mocca(path, opts=None):
     """Compiles MOCCA code
 
     Applies changes to internal params if needed
@@ -315,6 +372,7 @@ def make_mocca(path, opts=[]):
             find - find the MOCCA's src directory in upper hierarchy of folders
             small | large - changes params.h to account for small or large memory usage (use only one!)
     """
+    opts = opts or []
     available_sizes = {"small", "large"}  # set of available sizes
     known_opts = available_sizes | {"find", "clean"}
 
@@ -381,9 +439,10 @@ VERSION: {__VERSION__}
         help="Commit for the code to test (will affect the code directory!",
     )
     parser.add_argument(
-        "--ref-dir",
+        "--from",
         type=str,
         default=None,
+        dest="ref_dir",
         help="Directory with reference files (mocca.ini, mocca.slurm, *nbody.dat)",
     )
     parser.add_argument(
@@ -429,6 +488,7 @@ VERSION: {__VERSION__}
         help="user email for slurm notification (auto-detected from gitconfig if not provided)",
     )
     parser.add_argument(
+        "-p",
         "--partition",
         type=str,
         choices=["short", "long", "bigmem"],
@@ -437,6 +497,14 @@ VERSION: {__VERSION__}
     )
 
     # EXECUTION
+    parser.add_argument(
+        "-r",
+        "--run",
+        action="store_true",
+        default=False,
+        dest="run_sim",
+        help="execute simulation (submit to sbatch or run locally)",
+    )
     parser.add_argument(
         "--escape-bin-restart",
         action="store_true",
@@ -448,7 +516,17 @@ VERSION: {__VERSION__}
         help="wait for simulation to finish (e.g. when used in a pipe)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="path to directory with mocca.ini"
+        "--dry-run",
+        action="store_true",
+        help="[deprecated] dry-run is now the default; use --run to execute",
+    )
+
+    parser.add_argument(
+        "--clear",
+        nargs="?",
+        const="outputs",
+        default=None,
+        help="Clear simulation files. 'outputs' (default): keep mocca, mocca.ini, mocca.slurm, binary_nbody.dat, single_nbody.dat; 'all': keep only mocca.ini, mocca.slurm",
     )
 
     # MISC
@@ -475,6 +553,25 @@ def main():
 
     if args.version:
         print(f"mrun {__VERSION__}")
+        return 0
+
+    if args.dry_run:
+        warnings.warn(
+            "--dry-run is deprecated; the default is now dry-run (use --run to execute)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    if args.clear is not None:
+        if args.clear not in ("all", "outputs"):
+            logger.error(f"Invalid --clear value: {args.clear!r}. Choose from 'all' or 'outputs'.")
+            return 1
+        keep_map = {
+            "all": ["mocca.ini", "mocca.slurm"],
+            "outputs": ["mocca", "mocca.ini", "mocca.slurm", "binary_nbody.dat", "single_nbody.dat"],
+        }
+        for rp in args.paths:
+            clean_dir(rp, keep=keep_map[args.clear])
         return 0
 
     # logger.parent.setLevel(args.logLevel)

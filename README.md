@@ -9,14 +9,47 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install moccarun
 ```
 
+When installing from a non-master branch, use `--name mrun-dev` to keep `mrun` from master available:
+
+```bash
+uv tool install --name mrun-dev git+https://github.com/user/moccarun@branch
+```
+
 ## Quick Start
 
 ```bash
-mrun path/to/simulation --partition short
+# Prepare a simulation directory (default: dry-run, no submission)
+mrun path/to/simulation
+
+# Run it (submit to sbatch)
+mrun path/to/simulation --run
+
+# Short alias for --partition
+mrun path/to/simulation -p short
+
+# Override mocca.ini parameters
 mrun path/to/simulation --moccaini '{"tdelay_fraction": 0.0}'
+
+# Compile and prepare
 mrun --make clean,large path/to/simulation
-mrun --grid '{"nbody": [1000, 2000]}' --ref-dir path/to/reference
+
+# Grid of simulations
+mrun --grid '{"nbody": [1000, 2000]}' --from path/to/reference
+
+# Clear outputs, keeping mocca.ini and mocca.slurm
+mrun path/to/simulation --clear
+
+# Clear everything except binary and data files
+mrun path/to/simulation --clear all
 ```
+
+## Key Features
+
+- **`--run`/`-r`**: Execute the simulation (default is dry-run, which only prepares files)
+- **`-p`**: Shorthand for `--partition` (choices: `short`, `long`, `bigmem`)
+- **`--clear`**: Clean simulation output files (`outputs` mode keeps binary+data by default; `all` keeps only ini+slurm)
+- **Binary discovery**: Automatically finds `src/mocca` in the git repository root
+- **Email**: Auto-detected from CLI arg, env var, or gitconfig
 
 ## Email
 

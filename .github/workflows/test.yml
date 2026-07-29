@@ -26,8 +26,18 @@ jobs:
         run: uv run pytest
 
       - name: Tool install
-        run: uv tool install .
+        run: |
+          if [ "${{ github.ref_name }}" = "master" ]; then
+            uv tool install --name mrun .
+          else
+            uv tool install --name mrun-dev .
+          fi
 
       - name: Tool version check
-        run: mrun --version
+        run: |
+          if [ "${{ github.ref_name }}" = "master" ]; then
+            mrun --version
+          else
+            mrun-dev --version
+          fi
 
