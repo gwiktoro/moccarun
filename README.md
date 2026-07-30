@@ -9,10 +9,10 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv tool install moccarun
 ```
 
-When installing from a non-master branch, use `--name mrun-dev` to keep `mrun` from master available:
+To install from the current branch:
 
 ```bash
-uv tool install --name mrun-dev git+https://github.com/user/moccarun@branch
+make install
 ```
 
 ## Quick Start

@@ -1,0 +1,5 @@
+#!/bin/bash
+VERSION=$(date +%y%m%d%H%M)
+sed -i 's/__VERSION__ = ".*"/__VERSION__ = "'"$VERSION"'"/' moccarun.py
+sed -i 's/version = ".*"/version = "'"$VERSION"'"/' pyproject.toml
+git add moccarun.py pyproject.toml
