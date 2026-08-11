@@ -1,4 +1,9 @@
+*.tmp
 __pycache__
 .ipynb_checkpoints
 moccarun.egg-info/
 build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.old/

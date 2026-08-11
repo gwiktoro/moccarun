@@ -1,4 +1,4 @@
-import sys
+import re
 import tomllib
 from pathlib import Path
 
@@ -21,12 +21,9 @@ class TestVersionConsistency:
         )
 
     def test_version_format(self):
-        """Version should follow semantic versioning."""
+        """Version should be a 10-digit YYMMDDHHMM timestamp."""
         from moccarun import __VERSION__
 
-        parts = __VERSION__.split(".")
-        assert len(parts) >= 2, "Version should have at least major.minor"
-
-        # Major and minor should be numeric
-        assert parts[0].isdigit(), f"Major version '{parts[0]}' should be numeric"
-        assert parts[1].isdigit(), f"Minor version '{parts[1]}' should be numeric"
+        assert re.fullmatch(r"\d{10}", __VERSION__), (
+            f"Version '{__VERSION__}' should be a 10-digit YYMMDDHHMM timestamp"
+        )

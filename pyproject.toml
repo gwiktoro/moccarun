@@ -1,6 +1,6 @@
 [project]
 name = "moccarun"
-version = "1.0.0"
+version = "2608111845"
 description = "MOCCA simulation runner for SLURM clusters"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -26,6 +26,11 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+
+[dependency-groups]
+devel = [
+    "git-filter-repo>=2.47.0",
+]
 
 [project.scripts]
 mrun = "moccarun:main"
