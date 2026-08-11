@@ -6,13 +6,13 @@ MOCCA simulation runner for SLURM clusters.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv tool install moccarun
+make install
 ```
 
-To install from the current branch:
+Installs the `mrun` CLI from the current branch (`uv tool install .`). Optionally enable the pre-commit hook that auto-stamps the version:
 
 ```bash
-make install
+make setup-hooks
 ```
 
 ## Quick Start
@@ -37,19 +37,20 @@ mrun --make clean,large path/to/simulation
 mrun --grid '{"nbody": [1000, 2000]}' --from path/to/reference
 
 # Clear outputs, keeping mocca.ini and mocca.slurm
-mrun path/to/simulation --clear
+mrun path/to/simulation --clean
 
 # Clear everything except binary and data files
-mrun path/to/simulation --clear all
+mrun path/to/simulation --clean all
 ```
 
 ## Key Features
 
-- **`--run`/`-r`**: Execute the simulation (default is dry-run, which only prepares files)
-- **`-p`**: Shorthand for `--partition` (choices: `short`, `long`, `bigmem`)
-- **`--clear`**: Clean simulation output files (`outputs` mode keeps binary+data by default; `all` keeps only ini+slurm)
-- **Binary discovery**: Automatically finds `src/mocca` in the git repository root
-- **Email**: Auto-detected from CLI arg, env var, or gitconfig
+- **Default is dry-run**: `mrun` only prepares files; use `-r`/`--run` to submit to sbatch
+- **Linear chaining**: `--make`, `--clean`, `--run` compose as compile → clean → run per path
+- **`--clean`**: clean output files (`outputs` keeps binary+data files; `all` keeps only ini+slurm)
+- **Paths are positional**: place them before option values, e.g. `mrun path/to/sim --make clean,large`. A path after `--make`/`--clean` is rejected as an unexpected option value
+- **Binary discovery**: finds `mocca` binary in `src/` of the git repository root
+- **Email**: auto-detected from CLI arg, env var, or gitconfig
 
 ## Email
 
@@ -62,8 +63,10 @@ SLURM notifications use email auto-detected in this priority:
 ## Development
 
 ```bash
-uv sync --extra dev
-uv run pytest
+make sync        # uv sync --extra dev
+make test        # uv run pytest
+make setup-hooks # enable pre-commit hook (auto-stamps version YYMMDDHHMM)
+make clean
 ```
 
 ---
