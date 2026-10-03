@@ -1,62 +1,135 @@
 #!/usr/bin/env python3
 
-__VERSION__ = "2608111845"
+__VERSION__ = "2610031625"
 
+import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 from argparse import ArgumentParser, ArgumentTypeError
-from configparser import ConfigParser
-from copy import copy
+from functools import cache
 from itertools import product
 from pathlib import Path
-from shutil import rmtree
-import subprocess
-import json
-
-import warnings
 
 from loguru import logger
 
+# Name of the MOCCA git repository (last component of a remote URL, e.g. .../mocca/mocca.git)
+MOCCA_REPO_NAME = "mocca"
+
+# Paths (relative to src/) that must be tracked by git in the MOCCA repository.
+# Together with the repository name they identify a MOCCA checkout: the files
+# alone (e.g. a mocca.slurm) can exist anywhere.
+MOCCA_SRC_TRACKED = (
+    "makefile",
+    "MOCCA/montcarl.f",
+    "MOCCA/input.f",
+    "MOCCA/version.f",
+    "MOCCA/params.h",
+    "mocca-default-1pop.ini",
+    "mocca-default-2pop.ini",
+    "mocca.slurm",
+    "bse",
+    "fewbody",
+    "iniparser",
+    "marsene",
+)
+
+# Default simulation inputs: name in simulation dir -> name in MOCCA src/
+DEFAULT_INPUTS = {"mocca.ini": "mocca-default-2pop.ini", "mocca.slurm": "mocca.slurm"}
+
 MOCCA_SIZES = {"small", "large"}
-MOCCA_MAKE_OPTS = MOCCA_SIZES | {"find", "clean"}
+MOCCA_MAKE_OPTS = MOCCA_SIZES | {"clean"}
 CLEAN_MODES = {
     "all": ["mocca.ini", "mocca.slurm"],
     "outputs": ["mocca", "mocca.ini", "mocca.slurm", "binary_nbody.dat", "single_nbody.dat"],
 }
 
+# partition -> (--time, --mem-per-cpu, hours)
+PARTITIONS = {
+    "short": ("36:00:00", "2999MB", 36),
+    "long": ("336:00:00", "2999MB", 336),
+    "bigmem": ("168:00:00", "5999MB", 168),
+}
+# fraction of the partition's time limit (in minutes) at which MOCCA stops gently (for restarts)
+RUNMAXCPU_FRAC = 0.9
 
-def get_user_email(cli_email: str | None = None) -> str:
-    """Get user email for SLURM notifications.
+# params.h limits: size -> (NMAX, NBMAX3, NSUPZO)
+PARAMS_H_SIZES = {"small": (2200000, 2200000, 400), "large": (5200000, 5200000, 600)}
 
-    Priority: CLI arg > MOCCARUN_EMAIL env > ~/.gitconfig > error
-    """
-    if cli_email:
-        return cli_email
+SOURCE_SUFFIXES = {".f", ".f90", ".f95", ".f03", ".f08", ".h"}
 
-    if env_email := os.environ.get("MOCCARUN_EMAIL"):
-        return env_email
 
-    gitconfig = Path.home() / ".gitconfig"
-    if gitconfig.is_file():
-        parser = ConfigParser()
-        parser.read(gitconfig)
-        if parser.has_option("user", "email"):
-            return parser.get("user", "email")
-        logger.warning("No email found in ~/.gitconfig, trying system default")
-
-    if system_email := os.environ.get("EMAIL"):
-        return system_email
-
-    raise ValueError(
-        "No email provided. Set --user-email, MOCCARUN_EMAIL env var, "
-        "configure git (git config --global user.email), or set EMAIL env var."
-    )
+class MoccaError(ValueError):
+    """User-facing error: reported by main() without a traceback."""
 
 
 def fix_path(path):
     """ensure that the path is Path() class and is absolute"""
 
-    return Path(path).absolute()
+    return Path(path).expanduser().absolute()
+
+
+def run(cmd, **kwargs):
+    """Run subprocess command
+
+    A `str` command is run through the shell, a list is run directly.
+    capture_output=True if not specified in kwargs.
+
+    Args
+        cmd (str | list): command to run
+        **kwargs : passed to subprocess.run()
+    Returns
+        subprocess.CompletedProcess
+    """
+    kwargs.setdefault("shell", isinstance(cmd, str))
+    kwargs.setdefault("capture_output", True)
+
+    logger.debug(f"run {cmd=} {kwargs=}")
+    return subprocess.run(cmd, **kwargs)
+
+
+def git(*args, cwd) -> str | None:
+    """stdout of a git command run in `cwd`, None on failure"""
+    p = run(["git", "-C", str(cwd), *args])
+    return p.stdout.decode().strip() if p.returncode == 0 else None
+
+
+def git_user_email() -> str | None:
+    try:
+        p = run(["git", "config", "--get", "user.email"])
+    except OSError:
+        return None
+    return p.stdout.decode().strip() or None if p.returncode == 0 else None
+
+
+def get_user_email(cli_email: str | None = None) -> str:
+    """Get user email for SLURM notifications.
+
+    Priority: CLI arg > MOCCARUN_EMAIL env > git config user.email > EMAIL env
+    """
+    if cli_email:
+        logger.info(f"email for SLURM notifications: {cli_email} (--user-email)")
+        return cli_email
+
+    if env_email := os.environ.get("MOCCARUN_EMAIL"):
+        logger.info(f"email for SLURM notifications: {env_email} (MOCCARUN_EMAIL)")
+        return env_email
+
+    if email := git_user_email():
+        logger.info(f"email for SLURM notifications: {email} (git config user.email)")
+        return email
+    logger.warning("no email in git config (user.email), trying the EMAIL env var")
+
+    if system_email := os.environ.get("EMAIL"):
+        logger.info(f"email for SLURM notifications: {system_email} (EMAIL)")
+        return system_email
+
+    raise MoccaError(
+        "No email provided. Set --user-email, MOCCARUN_EMAIL env var, "
+        "configure git (git config --global user.email), or set EMAIL env var."
+    )
 
 
 def clean_dir(path, keep=None):
@@ -65,128 +138,138 @@ def clean_dir(path, keep=None):
     path = fix_path(path)
     keep = keep or []
 
-    for item in path.iterdir():
-        if item.name not in keep:
-            if item.is_file():
-                item.unlink()
-            elif item.is_dir():
-                rmtree(item)
+    doomed = sorted(item for item in path.iterdir() if item.name not in keep)
+    logger.warning(f"cleaning {path}: removing {len(doomed)} item(s), keeping {keep}")
+    for item in doomed:
+        logger.debug(f"removing {item}")
+        if item.is_dir() and not item.is_symlink():
+            shutil.rmtree(item)
+        else:
+            item.unlink()
 
 
-def verify_cleaned(path, keep=None):
-    """Verify only `keep` files remain after cleaning; return False if leftovers exist."""
-    path = fix_path(path)
-    keep = set(keep or [])
-    leftover = [item.name for item in path.iterdir() if item.name not in keep]
-    if leftover:
-        logger.error(f"unexpected files remaining after clean: {sorted(leftover)}")
-        return False
-    return True
+def remote_repo_names(repo) -> set[str]:
+    """Repository names from the URLs of all git remotes (".../mocca/mocca.git" -> "mocca")"""
+    out = git("config", "--get-regexp", r"^remote\..*\.url$", cwd=repo) or ""
+    urls = (line.split(maxsplit=1)[1] for line in out.splitlines() if " " in line)
+    return {re.split(r"[/:]", u.rstrip("/").removesuffix(".git"))[-1] for u in urls}
 
 
-def find_mocca_src_path(path=None):
-    """Find the MOCCA src/ directory using git repository root.
+def validate_mocca_src(src) -> Path:
+    """Verify that `src` is the src/ directory of the MOCCA git repository.
 
-    Args:
-        path: Starting path (default: current directory)
-
-    Returns:
-        Path to src/ directory if valid, None otherwise
-    """
-    if path is None:
-        path = Path.cwd()
-    else:
-        path = fix_path(path)
-
-    p = run("git rev-parse --show-toplevel")
-    if p.returncode != 0:
-        return None
-
-    repo_root = Path(p.stdout.decode().strip())
-    src_path = repo_root / "src"
-
-    if (
-        src_path.is_dir()
-        and (src_path / "mocca-default-2pop.ini").is_file()
-        and (src_path / "MOCCA").is_dir()
-        and (src_path / "bse").is_dir()
-    ):
-        return src_path
-
-    return None
-
-
-def find_mocca_binary(path=None):
-    """Find the mocca binary in the git repo's src/ directory.
-
-    Uses find_mocca_src_path() to locate src/, then checks for mocca binary.
-
-    Args:
-        path: Starting path (default: current directory)
+    Checks, in order:
+    - the parent of `src` is the root of its own git repository (not e.g. an
+      uninitialized submodule or a plain subdirectory of another repository);
+    - that repository is named `MOCCA_REPO_NAME` on a git remote;
+    - MOCCA-specific files (`MOCCA_SRC_TRACKED`) are tracked by git in `src`, and
+      the makefile has the `mocca` target.
 
     Returns:
-        Path to the mocca binary
+        the validated src path
 
     Raises:
-        SystemExit: If binary is not found and no alternative is provided
+        MoccaError: if any check fails
     """
-    src_path = find_mocca_src_path(path)
-    if src_path is not None:
-        mocca_binary = src_path / "mocca"
-        if mocca_binary.is_file():
-            return mocca_binary
+    src = fix_path(src)
+    repo = src.parent
 
-    logger.error(
-        "mocca binary not found in git repo's src/ directory. "
-        "Use --mocca-binary KEEP to keep the existing binary, "
-        "or --mocca-binary /path/to/mocca to specify a path."
-    )
-    exit(1)
+    if not src.is_dir():
+        raise MoccaError(f"not a directory: {src}")
+
+    toplevel = git("rev-parse", "--show-toplevel", cwd=repo)
+    if toplevel is None or Path(toplevel).resolve() != repo.resolve():
+        raise MoccaError(
+            f"{repo} is not a git repository root "
+            "(uninitialized submodule? try: git submodule update --init)"
+        )
+
+    if MOCCA_REPO_NAME not in (names := remote_repo_names(repo)):
+        raise MoccaError(
+            f"{repo} is not the MOCCA repository: no git remote named "
+            f"'{MOCCA_REPO_NAME}' (remote repository names: {sorted(names) or 'none'})"
+        )
+
+    tracked = (git("ls-files", "--", *MOCCA_SRC_TRACKED, cwd=src) or "").splitlines()
+    missing = [
+        f for f in MOCCA_SRC_TRACKED if not any(t == f or t.startswith(f + "/") for t in tracked)
+    ]
+    if missing:
+        raise MoccaError(f"{src} is not MOCCA's src directory: not tracked by git: {missing}")
+
+    if not re.search(r"^mocca\s*:", (src / "makefile").read_text(errors="replace"), re.M):
+        raise MoccaError(f"{src}/makefile has no 'mocca' target")
+
+    for f in DEFAULT_INPUTS.values():  # tracked, but may be deleted in the working tree
+        if not (src / f).is_file():
+            raise MoccaError(f"{src / f} not found")
+
+    return src
 
 
-def run(cmd, **kwargs):
-    """Run subprocess command
+def find_mocca_src_path(path=None) -> Path:
+    """Find the MOCCA src/ directory: <git-root>/mocca/src, else <git-root>/src
 
-    assuming shell=True and capture_output=True if not specified in kwargs
+    <git-root>/mocca/src is for a project containing MOCCA (e.g. as a submodule) and
+    takes precedence; <git-root>/src is for MOCCA's own repository.
+    The git root is that of `path` (default: current directory); `path` may not exist yet.
 
-    Args
-        cmd (str): command to run
-        **kwargs : passed to subprocess.run()
-    Returns
-        subprocess.CompletedProcess
+    Raises:
+        MoccaError: if not in a git repository or no candidate is MOCCA's src
     """
-    kwargs.setdefault("shell", True)
-    kwargs.setdefault("capture_output", True)
+    start = fix_path(path or Path.cwd())
+    start = next(p for p in (start, *start.parents) if p.is_dir())
 
-    logger.debug(f"run {cmd=} {kwargs=}")
-    p = subprocess.run(cmd, **kwargs)
-    return p
+    root = git("rev-parse", "--show-toplevel", cwd=start)
+    if root is None:
+        raise MoccaError(f"{start} is not in a git repository; use --mocca-src")
+
+    errors = []
+    for candidate in (Path(root) / "mocca" / "src", Path(root) / "src"):
+        try:
+            return validate_mocca_src(candidate)
+        except MoccaError as e:
+            errors.append(f"{candidate}: {e}")
+    raise MoccaError("MOCCA src not found:\n  " + "\n  ".join(errors))
+
+
+def resolve_mocca_src(explicit=None, path=None) -> Path:
+    """`--mocca-src` if given, otherwise <git-root>/mocca/src; always validated"""
+    return validate_mocca_src(explicit) if explicit else find_mocca_src_path(path)
+
+
+def resolve_mocca_binary(binary: Path) -> Path:
+    """`--mocca-binary` may be the binary itself or a directory containing `mocca`"""
+    binary = fix_path(binary)
+    if binary.is_dir():
+        binary /= "mocca"
+    if not binary.is_file():
+        raise MoccaError(f"mocca binary not found: {binary}")
+    return binary
 
 
 def set_moccaini(path, **kwargs):
-    """make changes to mocca.ini file
+    """make changes to mocca.ini file, keeping all comments
 
     Args:
         path (Path | str): path to mocca.ini file
         kwargs: key and values to update
 
-    Returns:
-        0 on success, 1 if a key was not found
+    Raises:
+        MoccaError: if a key is not set (or only commented out) in the file
     """
 
     path = fix_path(path)
-    assert path.is_file(), f"not a file: {path=}"
+    text = path.read_text()
 
     for k, v in kwargs.items():
-        p = run(rf'grep "^{k}\s*=\s*[^#]\+" {path}')
-        if p.returncode == 1:
-            logger.error(f"key not found in mocca.ini: {k=}")
-            return 1
-        p_sed = run(rf'sed -i "s/^{k}\s*=\s*.*/{k} = {v}/" {path}')
-        assert p_sed.returncode == 0, "sed run incorrectly! {p_sed.args=}"
-        logger.info(f"{p.stdout.decode('utf8').strip()} -> {v}")
+        pattern = re.compile(rf"^{re.escape(k)}[ \t]*=[ \t]*[^#\s].*$", re.M)
+        if (m := pattern.search(text)) is None:
+            raise MoccaError(f"key not found in {path}: {k}")
+        logger.info(f"mocca.ini: {m.group()} -> {k} = {v}")
+        text = pattern.sub(lambda _: f"{k} = {v}", text)
 
-    return 0
+    path.write_text(text)
 
 
 def set_moccaslurm(
@@ -196,6 +279,10 @@ def set_moccaslurm(
 
     Args:
         path (Path | str): path to mocca.slurm file
+        job_name (str): job name
+        mail_user (str): notification email (also uncomments the line if needed)
+        partition (str): one of PARTITIONS; sets partition, time limit and memory
+        escape_bin_restart (bool): run MOCCA in the escapers' restart mode
     """
 
     path = fix_path(path)
@@ -203,100 +290,119 @@ def set_moccaslurm(
         f"Not a mocca slurm file! {path=}"
     )
 
-    sed_cmd_l = []
-
+    subs = []  # (regex, new line)
     if job_name is not None:
-        sed_cmd_l.append(f"s/#SBATCH -J .*/#SBATCH -J {job_name}/")
+        subs.append((r"#+SBATCH -J .*", f"#SBATCH -J {job_name}"))
     if mail_user is not None:
-        sed_cmd_l.append(f"s/#SBATCH --mail-user=.*/#SBATCH --mail-user={mail_user}/")
+        subs.append((r"#+SBATCH --mail-user=.*", f"#SBATCH --mail-user={mail_user}"))
     if partition is not None:
-        if partition == "short":
-            sed_cmd_l.append("s/#SBATCH --time=.*/#SBATCH --time=36:00:00/")
-            sed_cmd_l.append("s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
-            sed_cmd_l.append("s/#SBATCH -p .*/#SBATCH -p short/")
-        elif partition == "long":
-            sed_cmd_l.append("s/#SBATCH --time=.*/#SBATCH --time=336:00:00/")
-            sed_cmd_l.append("s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=2999MB/")
-            sed_cmd_l.append("s/#SBATCH -p .*/#SBATCH -p long/")
-        elif partition == "bigmem":
-            sed_cmd_l.append("s/#SBATCH --time=.*/#SBATCH --time=168:00:00/")
-            sed_cmd_l.append("s/#SBATCH --mem-per-cpu=.*/#SBATCH --mem-per-cpu=5999MB/")
-            sed_cmd_l.append("s/#SBATCH -p .*/#SBATCH -p bigmem/")
+        time, mem, _ = PARTITIONS[partition]
+        subs += [
+            (r"#+SBATCH --time=.*", f"#SBATCH --time={time}"),
+            (r"#+SBATCH --mem-per-cpu=.*", f"#SBATCH --mem-per-cpu={mem}"),
+            (r"#+SBATCH -p .*", f"#SBATCH -p {partition}"),
+        ]
+    subs.append(
+        (r"\./mocca\b.*", mocca_command(escape_bin_restart)[1])
+    )
+
+    text = path.read_text()
+    for regex, line in subs:
+        text, n = re.subn(rf"^{regex}$", lambda _: line, text, flags=re.M)
+        if n == 0:
+            logger.warning(f"{path.name}: nothing to update, no line matches /{regex}/")
         else:
-            logger.error(f"Unsupported partition type! {partition=}")
-            exit(1)
+            logger.info(f"{path.name}: {line}")
+    path.write_text(text)
 
+
+def mocca_command(escape_bin_restart=False) -> tuple[list[str], str]:
+    """(argv, slurm-script line) of the command running MOCCA"""
     if escape_bin_restart:
-        sed_cmd_l.append(
-            r"s/^.\/mocca.*/.\/mocca --escape-bin-restart > zzz-escape-bin-restart/"
+        return (
+            ["./mocca", "--escape-bin-restart"],
+            "./mocca --escape-bin-restart > zzz-escape-bin-restart",
         )
-    else:
-        sed_cmd_l.append(r"s/^\.\/mocca.*/.\/mocca > zzz/")
+    return ["./mocca"], "./mocca > zzz"
 
-    sed_cmd = ";".join(sed_cmd_l)
-    run(f'sed -i "{sed_cmd}" {path}')
+
+def prepare_inputs(path: Path, ref_dir, get_src):
+    """Put mocca.ini and mocca.slurm (and *_nbody.dat from `ref_dir`) in the simulation dir
+
+    - `ref_dir` given: its files always overwrite the ones in `path`
+    - otherwise: only missing files are copied, from MOCCA's src/ defaults
+      (mocca-default-2pop.ini is copied as mocca.ini); existing files are never touched
+    """
+    if ref_dir is not None:
+        ref_dir = fix_path(ref_dir)
+        for name in DEFAULT_INPUTS:
+            if not (ref_dir / name).is_file():
+                raise MoccaError(f"{name} not found in --from directory {ref_dir}")
+        for f in [*(ref_dir / n for n in DEFAULT_INPUTS), *ref_dir.glob("*_nbody.dat")]:
+            overwritten = " (overwriting)" if (path / f.name).exists() else ""
+            logger.info(f"copying {f} -> {path / f.name}{overwritten}")
+            shutil.copy2(f, path / f.name)
+        return
+
+    for name, default in DEFAULT_INPUTS.items():
+        if (path / name).exists():
+            logger.info(f"keeping existing {path / name} (use --from to overwrite)")
+        else:
+            src_file = get_src() / default
+            logger.info(f"creating {path / name} from {src_file}")
+            shutil.copy2(src_file, path / name)
 
 
 def moccarun(
-    path=Path("."),
-    mocca_src_path=None,
+    path,
+    user_email,
+    mocca_src=None,
     ref_dir=None,
-    mocca_binary="FIND",
+    mocca_binary=None,
+    keep_mocca_binary=False,
     moccaini=None,
-    user_email=None,
     partition=None,
     wait=False,
-    dry_run=False,
     run_sim=False,
     no_slurm=False,
     escape_bin_restart=False,
-    moccainipath=None,
-    **kwargs,
 ):
-    user_email = get_user_email(user_email)
-    moccaini = moccaini or {}
+    """Prepare a simulation directory and, only if `run_sim`, start it.
 
-    logger.debug(f"Unknown arguments to moccarun(): {kwargs}")
-
+    Preparation: mocca.ini and mocca.slurm (see prepare_inputs), the mocca binary
+    (from `mocca_binary` or MOCCA's src/; skipped with `keep_mocca_binary`), then updates of
+    mocca.ini (`moccaini`, `partition`) and mocca.slurm.
+    Nothing is submitted to SLURM or executed unless `run_sim` is set.
+    """
     path = fix_path(path)
-    logger.debug(f"{path=}")
 
-    if not path.exists():
-        logger.info(f"Creating directory {path}")
-        run(f"mkdir -p {path}")
-        if ref_dir is None:
-            mocca_src_path = mocca_src_path or find_mocca_src_path(path)
-            assert mocca_src_path is not None, "no path to MOCCA's src/"
-            logger.info(f"populating initial files from {mocca_src_path=}")
-            run(
-                f"cp -f {mocca_src_path}/mocca-default-2pop.ini {path}/mocca.ini && cp -f {mocca_src_path}/mocca.slurm {path}"
-            )
+    if not path.is_dir():
+        logger.info(f"creating directory {path}")
+    path.mkdir(parents=True, exist_ok=True)
 
-    if ref_dir is not None:
-        run(f"cp -f {ref_dir}/{{mocca.ini,mocca.slurm,*_nbody.dat}} {path}")
-    if moccainipath is not None:
-        run(f"cp -f {moccainipath} {path}")
+    @cache
+    def get_src():
+        src = resolve_mocca_src(mocca_src, path)
+        logger.info(f"using MOCCA src: {src}")
+        return src
 
-    if set_moccaini(path / "mocca.ini", **moccaini):
-        exit(1)
+    prepare_inputs(path, ref_dir, get_src)
 
-    if mocca_binary != "KEEP":
-        if mocca_binary == "FIND":
-            mocca_binary_path = find_mocca_binary(path)
+    if keep_mocca_binary:
+        if (path / "mocca").is_file():
+            logger.info(f"keeping existing binary {path / 'mocca'} (--keep-mocca-binary)")
         else:
-            if not mocca_binary.endswith("/mocca"):
-                mocca_binary += "/mocca"
-            mocca_binary_path = fix_path(mocca_binary)
+            logger.warning(f"--keep-mocca-binary given but there is no {path / 'mocca'}")
+    else:
+        binary = resolve_mocca_binary(mocca_binary or get_src() / "mocca")
+        logger.info(f"copying binary {binary} -> {path / 'mocca'}")
+        shutil.copy2(binary, path / "mocca")
 
-        logger.debug(f"{mocca_binary_path=}")
-
-        p = run(f"cp {mocca_binary_path} {path}")
-        if p.returncode != 0:
-            logger.error(f"Mocca binary not found in {mocca_binary_path=}")
-            exit(1)
-
-    # SLURM
-    logger.info("Updating slurm script")
+    ini = dict(moccaini or {})
+    if partition is not None:
+        hours = PARTITIONS[partition][2]
+        ini = {"runmaxcpu": int(RUNMAXCPU_FRAC * hours * 60)} | ini
+    set_moccaini(path / "mocca.ini", **ini)
 
     set_moccaslurm(
         path / "mocca.slurm",
@@ -306,79 +412,89 @@ def moccarun(
         escape_bin_restart=escape_bin_restart,
     )
 
-    # Updating the runmaxcpu parameter for partition
-    runmaxcpu_frac = 0.9  # fraction of partitions max time at which the code is gently stopped (for restarts)
-    if partition is not None:
-        if partition == "short":
-            set_moccaini(path / "mocca.ini", runmaxcpu=int(runmaxcpu_frac * 2160))
-        elif partition == "long":
-            set_moccaini(path / "mocca.ini", runmaxcpu=int(runmaxcpu_frac * 20160))
-        elif partition == "bigmem":
-            set_moccaini(path / "mocca.ini", runmaxcpu=int(runmaxcpu_frac * 10080))
-        else:
-            logger.error(f"Unsupported partition type! {partition=}")
-            exit(1)
+    if not run_sim:
+        logger.info(f"prepared {path}; not started (use --run to execute)")
+        return
 
-    if run_sim:
-        if no_slurm:
-            run(f"(cd {path} && ./mocca > zzz)")
-        else:
-            p = run(f"(cd {path} && sbatch {'--wait' if wait else ''} mocca.slurm)")
-            assert p.returncode == 0, "cannot submit slurm job:\n{p.args=}\n{p.strerr=}"
-            logger.info(f"{p.stdout.decode('utf8').strip()}")
+    if not (path / "mocca").is_file():
+        raise MoccaError(f"no mocca binary in {path}")
+
+    if no_slurm:
+        argv, _ = mocca_command(escape_bin_restart)
+        out = "zzz-escape-bin-restart" if escape_bin_restart else "zzz"
+        logger.info(f"running {' '.join(argv)} locally in {path} (output: {out})")
+        with open(path / out, "w") as f:
+            p = run(argv, cwd=path, stdout=f, capture_output=False)
+        if p.returncode != 0:
+            raise MoccaError(f"{' '.join(argv)} failed in {path}: exit code {p.returncode}")
+        logger.info(f"{path.name}: local run finished")
     else:
-        logger.info("dry run finished")
+        cmd = ["sbatch", *(["--wait"] if wait else []), "mocca.slurm"]
+        logger.info(f"submitting: {' '.join(cmd)} (in {path})")
+        p = run(cmd, cwd=path)
+        if p.returncode != 0:
+            raise MoccaError(f"cannot submit slurm job:\n{p.stderr.decode().strip()}")
+        logger.info(p.stdout.decode().strip())
 
 
-def make_mocca(path, opts=None) -> None:
+def make_mocca(src, opts=None) -> None:
     """Compiles MOCCA code
 
     Applies changes to internal params if needed and verifies a fresh binary
-    was produced. On failure, logs an error and exits.
+    was produced.
 
-    CHANGELOG: changes to Mcluster/main.c are no longer needed with the new code
+    Raises:
+        MoccaError: if compilation fails or no fresh binary was produced
 
     Args:
-        path (Path | str): path to src (see also 'find' option below)
+        src (Path | str): path to MOCCA's src/
         opts (List[str]): options for compilation
             clean - do cleaning before compilation (forces a fresh binary)
-            find - find the MOCCA src directory via git repository root
             small | large - changes params.h to account for small or large memory usage (use only one!)
     """
     opts = set(filter(None, opts or []))
     assert not (unknown := opts - MOCCA_MAKE_OPTS), f"Unknown options: {unknown=}"
 
-    path = fix_path(path)
+    src = fix_path(src)
 
-    if "find" in opts:
-        path = find_mocca_src_path(path)
+    if size := next(iter(opts & MOCCA_SIZES), None):
+        nmax, nbmax3, nsupzo = PARAMS_H_SIZES[size]
+        params = src / "MOCCA/params.h"
+        text = params.read_text()
+        for key, val in {"NMAX": nmax, "NBMAX3": nbmax3, "NSUPZO": nsupzo}.items():
+            text, n = re.subn(rf"\b{key}=\d+", f"{key}={val}", text)
+            if n == 0:
+                logger.warning(f"{params}: {key} not found, not changed")
+        params.write_text(text)
+        logger.info(f"{params}: NMAX={nmax}, NBMAX3={nbmax3}, NSUPZO={nsupzo} ('{size}')")
 
-    size = next(iter(opts & MOCCA_SIZES), None)
-    if size is not None:
-        sed_cmd = {
-            "small": r"s/NMAX=[0-9]\+/NMAX=2200000/;s/NBMAX3=[0-9]\+/NBMAX3=2200000/;s/NSUPZO=[0-9]\+/NSUPZO=400/",
-            "large": r"s/NMAX=[0-9]\+/NMAX=5200000/;s/NBMAX3=[0-9]\+/NBMAX3=5200000/;s/NSUPZO=[0-9]\+/NSUPZO=600/",
-        }[size]
-        run(f'sed -i "{sed_cmd}" {path / "MOCCA/params.h"}')
-
-    mocca_bin = path / "mocca"
+    mocca_bin = src / "mocca"
     existed_before = mocca_bin.is_file()
     bin_mtime_before = mocca_bin.stat().st_mtime if existed_before else 0
 
-    cmd = f"(cd {path} &&"
-    if "clean" in opts:
-        cmd += " make clean &&"
-    cmd += " make debug)"
-    p = run(cmd, capture_output=False)
-    if p.returncode != 0:
-        logger.error(f"Compilation failed: exit code {p.returncode}")
-        exit(1)
+    for target in (["clean"] if "clean" in opts else []) + ["debug"]:
+        logger.info(f"running 'make {target}' in {src}")
+        p = run(["make", target], cwd=src, capture_output=False)
+        if p.returncode != 0:
+            raise MoccaError(f"compilation failed: 'make {target}' exit code {p.returncode}")
     if not mocca_bin.is_file():
-        logger.error(f"mocca binary not created: {mocca_bin}")
-        exit(1)
+        raise MoccaError(f"mocca binary not created: {mocca_bin}")
     if "clean" in opts and existed_before and mocca_bin.stat().st_mtime <= bin_mtime_before:
-        logger.error(f"mocca binary not rebuilt after 'make clean': {mocca_bin}")
-        exit(1)
+        raise MoccaError(f"mocca binary not rebuilt after 'make clean': {mocca_bin}")
+    logger.info(f"compiled {mocca_bin}")
+
+
+def grep_mocca(src, pattern) -> None:
+    """grep -n `pattern` in MOCCA's Fortran sources and headers"""
+    files = sorted(str(f) for f in src.rglob("*") if f.suffix in SOURCE_SUFFIXES)
+    logger.info(f"grep '{pattern}' in {len(files)} files under {src}")
+    p = run(["grep", "-nH", "-e", pattern, *files])
+    if p.returncode == 0:
+        print(p.stdout.decode())
+    elif p.returncode == 1:
+        logger.warning(f"no matches for '{pattern}'")
+    else:
+        raise MoccaError(f"grep failed: {p.stderr.decode().strip()}")
 
 
 def make_opts(s):
@@ -391,7 +507,9 @@ def make_opts(s):
 def parse_args(args=None):
     # Create the argument parser
     parser = ArgumentParser(
-        description=f"""MOCCA simulation runner - compile and run MOCCA code on SLURM clusters.
+        description=f"""MOCCA simulation runner - prepare, compile and run MOCCA simulations on SLURM clusters.
+
+Without --run nothing is submitted or executed: simulation directories are only prepared.
 
 VERSION: {__VERSION__}
 """
@@ -403,36 +521,53 @@ VERSION: {__VERSION__}
         type=Path,
         default=[Path(".")],
         nargs="*",
-        help="paths to directories with mocca.ini and mocca.slurm",
+        help="simulation directories (created if missing)",
     )
 
     parser.add_argument(
         "--grep", type=str, default=None, help="performs grep on MOCCA code files"
     )
 
-    # MOCCA BINARY
+    # MOCCA CODE AND INPUT FILES
     parser.add_argument(
-        "--make", type=make_opts, nargs="?", default=None, const="", help="compile MOCCA (comma-separated: clean,find,small,large)",
+        "--mocca-src",
+        type=Path,
+        default=None,
+        help="MOCCA's src/ directory (default: <git-root>/mocca/src, else <git-root>/src); "
+        "used for compilation, default input files and the mocca binary",
+    )
+    parser.add_argument(
+        "--make",
+        type=make_opts,
+        nargs="?",
+        default=None,
+        const="",
+        help="compile MOCCA in its src/ before preparing (comma-separated: clean,small,large)",
     )
     parser.add_argument(
         "--from",
-        type=str,
-        default=None,
-        dest="ref_dir",
-        help="Directory with reference files (mocca.ini, mocca.slurm, *_nbody.dat)",
-    )
-    parser.add_argument(
-        "--moccainipath",
         type=Path,
         default=None,
-        help="path to mocca.ini file. Will be copied to simulation directory",
+        dest="ref_dir",
+        help="directory with reference mocca.ini, mocca.slurm and *_nbody.dat; "
+        "they always overwrite the files in the simulation directory "
+        "(by default only missing mocca.ini and mocca.slurm are created, "
+        "from MOCCA's mocca-default-2pop.ini and mocca.slurm). "
+        "The mocca binary is never copied from here",
     )
     parser.add_argument(
         "--mocca-binary",
-        action="store",
-        type=str,
-        default="FIND",
-        help="Defines how to obtain the `mocca` binary file. 'FIND' (default) - look for mocca binary in git repo's src/; 'KEEP' - keep the current `mocca` binary (must be present); otherwise, treated as path to the mocca binary or the folder where it's located",
+        type=Path,
+        default=None,
+        help="copy this mocca binary (or the `mocca` in this directory) instead of <mocca-src>/mocca",
+    )
+    parser.add_argument(
+        "-k",
+        "--keep-mocca-binary",
+        action="store_true",
+        help="do not copy the mocca binary into the simulation directory "
+        "(keep the one already there). Config files are not affected: "
+        "existing ones are never overwritten unless --from is given",
     )
 
     # MOCCAINIT
@@ -440,7 +575,7 @@ VERSION: {__VERSION__}
         "--moccaini",
         type=json.loads,
         default=None,
-        help="arguments to change in mocca.ini",
+        help="arguments to change in mocca.ini (JSON)",
     )
 
     # GRID
@@ -448,26 +583,26 @@ VERSION: {__VERSION__}
         "--grid",
         type=str,
         default=None,
-        help="JSON string defining the simulation's grid",
+        help="JSON string (or file) defining the simulation's grid",
     )
 
     # SLURM
     parser.add_argument(
         "--no-slurm",
         action="store_true",
-        help="do not send slurm job, but execute code normally",
+        help="with --run: execute mocca locally instead of sending a slurm job",
     )
     parser.add_argument(
         "--user-email",
         type=str,
         default=None,
-        help="user email for slurm notification (auto-detected from gitconfig if not provided)",
+        help="user email for slurm notification (auto-detected from git config if not provided)",
     )
     parser.add_argument(
         "-p",
         "--partition",
         type=str,
-        choices=["short", "long", "bigmem"],
+        choices=list(PARTITIONS),
         default=None,
         help="slurm partition name (default: not change)",
     )
@@ -479,7 +614,7 @@ VERSION: {__VERSION__}
         action="store_true",
         default=False,
         dest="run_sim",
-        help="execute simulation (submit to sbatch or run locally)",
+        help="execute simulation (submit to sbatch or run locally); without it only prepare files",
     )
     parser.add_argument(
         "--escape-bin-restart",
@@ -490,11 +625,6 @@ VERSION: {__VERSION__}
         "--wait",
         action="store_true",
         help="wait for simulation to finish (e.g. when used in a pipe)",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="[deprecated] dry-run is now the default; use --run to execute",
     )
 
     parser.add_argument(
@@ -512,103 +642,114 @@ VERSION: {__VERSION__}
         "--logLevel",
         action="store",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="set logging level (default WARNING)",
-        default="WARNING",
+        help="set logging level (default INFO)",
+        default="INFO",
     )
 
-    # Parse the command-line arguments
-    args = parser.parse_args(args)
-
-    return args
+    return parser.parse_args(args)
 
 
-def main():
-    args = parse_args()
+def grid_targets(base, grid_arg):
+    """(path, mocca.ini changes) for every point of the grid, JSON string or file"""
+    grid_file = Path(grid_arg)
+    try:
+        grid = json.loads(grid_file.read_text() if grid_file.is_file() else grid_arg)
+    except json.JSONDecodeError as e:
+        raise MoccaError(f"--grid is neither a JSON file nor a JSON string: {e}") from e
 
+    for vals in product(*grid.values()):
+        changes = dict(zip(grid.keys(), vals))
+        name = "_".join(f"{k}={v}" for k, v in changes.items()).replace(" ", "")
+        yield base / name, changes
+
+
+def execute(args) -> int:
+    if args.grep is not None:
+        grep_mocca(resolve_mocca_src(args.mocca_src, args.paths[0]), args.grep)
+        return 0
+
+    # (path, extra mocca.ini changes) for every simulation
+    if args.grid is not None:
+        if len(args.paths) != 1:
+            raise MoccaError(
+                f"paths must be a single Path for '--grid' ({len(args.paths)=})"
+            )
+        targets = list(grid_targets(args.paths[0], args.grid))
+        logger.info(f"grid: {len(targets)} simulation(s) in {fix_path(args.paths[0])}")
+    else:
+        targets = [(p, {}) for p in args.paths]
+
+    user_email = get_user_email(args.user_email)
+
+    # compile once, then per simulation: clean -> prepare -> run
+    if args.make is not None:
+        make_mocca(
+            resolve_mocca_src(args.mocca_src, targets[0][0]), opts=args.make.split(",")
+        )
+
+    failed = []
+    for path, changes in targets:
+        logger.info(f"== {fix_path(path)}")
+        try:
+            if args.clean is not None:
+                if path.is_dir():
+                    clean_dir(path, keep=CLEAN_MODES[args.clean])
+                else:
+                    logger.info(f"--clean: {path} does not exist yet, nothing to clean")
+            moccarun(
+                path,
+                user_email,
+                mocca_src=args.mocca_src,
+                ref_dir=args.ref_dir,
+                mocca_binary=args.mocca_binary,
+                keep_mocca_binary=args.keep_mocca_binary,
+                moccaini=(args.moccaini or {}) | changes,
+                partition=args.partition,
+                wait=args.wait,
+                run_sim=args.run_sim,
+                no_slurm=args.no_slurm,
+                escape_bin_restart=args.escape_bin_restart,
+            )
+        except (MoccaError, OSError) as e:
+            logger.error(f"{path}: {e}")
+            failed.append(path)
+
+    done = len(targets) - len(failed)
+    what = "started" if args.run_sim else "prepared, not started (use --run)"
+    logger.info(f"finished: {done}/{len(targets)} simulation(s) {what}")
+    if failed:
+        logger.error(f"failed: {', '.join(str(p) for p in failed)}")
+    return 1 if failed else 0
+
+
+def setup_logging(level="INFO"):
+    """Log to stderr: `LEVEL message`; DEBUG adds time and code location"""
+    fmt = "<level>{level: <7}</level> {message}"
+    if level == "DEBUG":
+        fmt = "<green>{time:HH:mm:ss}</green> " + fmt + " <dim>({function}:{line})</dim>"
     logger.remove()
-    logger.add(sys.stderr, level=args.logLevel)
+    logger.add(sys.stderr, level=level, format=fmt)
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    setup_logging(args.logLevel)
 
     if args.version:
         print(f"mrun {__VERSION__}")
         return 0
 
-    if args.dry_run:
-        warnings.warn(
-            "--dry-run is deprecated; the default is now dry-run (use --run to execute)",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-
-    # logger.parent.setLevel(args.logLevel)
     logger.debug(f"{args=}")
-    del args.logLevel
-
-    logger.debug(f"{args.paths=}")
-    logger.debug(f"{args.make=}")
-
-    # Start a grid of simulations
-    if args.grid is not None:
-        if len(args.paths) != 1:
-            logger.error(
-                f"paths must be a single Path for '--grid' ({len(args.paths)=})"
-            )
-            return 1
-        grid_path = args.paths[0]
-        grid_json = args.grid
-        del args.grid
-        del args.paths
-
-        if args.make is not None:
-            make_mocca(find_mocca_src_path(grid_path), opts=args.make.split(","))
-        if args.clean is not None:
-            clean_dir(grid_path, keep=CLEAN_MODES[args.clean])
-            if not verify_cleaned(grid_path, CLEAN_MODES[args.clean]):
-                return 1
-
-        grid_file = Path(grid_json)
-        grid = json.loads(grid_file.read_text() if grid_file.exists() else grid_json)
-
-        for vals in product(*grid.values()):
-            args.moccaini = dict(zip(grid.keys(), vals))
-            logger.debug(f"{args.moccaini=}")
-
-            moccarun(
-                grid_path
-                / "_".join(f"{k}={v}" for k, v in args.moccaini.items()).replace(
-                    " ", ""
-                ),
-                **vars(args),
-            )
-        return 0
-
-    # Execute: linear chain per path (compile -> clean -> run)
-    for rp in args.paths:
-        run_args = copy(args)
-        run_args.path = rp
-        logger.debug(f"{run_args=}")
-
-        if run_args.grep is not None:
-            logger.debug("grep")
-            path = find_mocca_src_path(run_args.path)
-            p = run(
-                rf"""find {path} -type f \( -name "*.f" -o -name "*.f90" -o -name "*.f95" -o -name "*.f03" -o -name "*.f08" -o -name "*.h" \) -print0 | xargs -0 grep -n {run_args.grep} """
-            )
-            if p.returncode == 0:
-                print(p.stdout.decode("utf8"))
-            else:
-                print(p.stderr.decode("utf8"))
-
-            continue
-
-        if run_args.make is not None:
-            make_mocca(find_mocca_src_path(rp), opts=run_args.make.split(","))
-        if run_args.clean is not None:
-            clean_dir(rp, keep=CLEAN_MODES[run_args.clean])
-            if not verify_cleaned(rp, CLEAN_MODES[run_args.clean]):
-                continue
-        logger.info(f"Using path: {rp}")
-        moccarun(**vars(run_args))
+    try:
+        return execute(args)
+    except MoccaError as e:
+        logger.error(e)
+    except OSError as e:
+        logger.error(f"{type(e).__name__}: {e}")
+    except KeyboardInterrupt:
+        logger.error("interrupted")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

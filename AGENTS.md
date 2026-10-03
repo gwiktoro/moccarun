@@ -15,8 +15,12 @@ uv run python moccarun.py path/to/simulation
 - Enable hook: `make setup-hooks` (git config core.hooksPath .githooks).
 - Tests assert this format (`test_version.py`).
 
-## Binary Discovery
-`mocca` binary is found via git root → `src/mocca` (`find_mocca_src_path()`).
+## MOCCA Discovery and Preparation
+- MOCCA src: `<git-root>/mocca/src`, else `<git-root>/src` (first wins; `find_mocca_src_path()`, git root of the simulation path, not cwd); `--mocca-src` overrides. All validated by `validate_mocca_src()`: parent of src is its own git root, a git remote URL is named `mocca` (`MOCCA_REPO_NAME`), `MOCCA_SRC_TRACKED` paths are tracked by git, makefile has a `mocca:` target, default inputs exist.
+- Prep: `mocca.ini`/`mocca.slurm` copied from src defaults only if missing; `--from` always overwrites (and brings `*_nbody.dat`, never the binary). Binary copied from `<src>/mocca` or `--mocca-binary`; `-k`/`--keep-mocca-binary` skips it.
+- Nothing is submitted/executed without `--run` (single gate in `moccarun()`).
+- `--make` compiles once per execution, before any preparation.
+- Logging (loguru, stderr, default INFO via `setup_logging()`): every action/skip/rejection must be logged; expected failures raise `MoccaError`, reported once by `execute()` per simulation (others continue, exit code 1) or by `main()`. Tests: `tests/test_logging.py`.
 
 ## Makefile
 Targets: `install` (uv tool install .), `test`, `sync` (--extra dev), `setup-hooks`, `clean`.
@@ -25,7 +29,7 @@ Targets: `install` (uv tool install .), `test`, `sync` (--extra dev), `setup-hoo
 Auto-detected in this priority:
 1. `--user-email` CLI argument
 2. `MOCCARUN_EMAIL` environment variable
-3. `~/.gitconfig` user.email
+3. `git config user.email`
 4. `EMAIL` environment variable
 5. Error if none found
 
@@ -39,7 +43,7 @@ Uses `uv` (lockfile exists). Dependencies: `loguru>=0.7.3`. Dev: `pytest>=9.0.3`
 
 ## Files
 - `moccarun.py` - Main CLI entry point
-- `tests/` - Test suite (cli, email, version)
+- `tests/` - Test suite (cli, email, version, mocca_src, prepare); `conftest.py` builds a fake MOCCA git repo
 - `Makefile` - install/test/sync/setup-hooks targets
 - `.githooks/pre-commit` - version auto-bump hook
 - `.github/workflows/test.yml` - CI (install + mrun --version + pytest)

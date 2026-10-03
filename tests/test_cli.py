@@ -1,5 +1,6 @@
-import json
 import pytest
+
+import moccarun
 from moccarun import parse_args
 
 
@@ -7,197 +8,165 @@ class TestParseArgs:
     """Tests for CLI argument parsing."""
 
     def test_grid_accepts_json_string(self):
-        """--grid should accept JSON string."""
         args = parse_args(["--grid", '{"n": [1, 2]}', "."])
         assert args.grid == '{"n": [1, 2]}'
 
     def test_moccaini_parses_json(self):
-        """--moccaini should parse JSON."""
         args = parse_args(["--moccaini", '{"n": 100}', "."])
         assert args.moccaini == {"n": 100}
 
-    def test_partition_short(self):
-        """--partition short should be accepted."""
-        args = parse_args(["--partition", "short", "."])
-        assert args.partition == "short"
-
-    def test_partition_long(self):
-        """--partition long should be accepted."""
-        args = parse_args(["--partition", "long", "."])
-        assert args.partition == "long"
-
-    def test_partition_bigmem(self):
-        """--partition bigmem should be accepted."""
-        args = parse_args(["--partition", "bigmem", "."])
-        assert args.partition == "bigmem"
+    @pytest.mark.parametrize("partition", ["short", "long", "bigmem"])
+    def test_partition(self, partition):
+        assert parse_args(["--partition", partition, "."]).partition == partition
+        assert parse_args(["-p", partition, "."]).partition == partition
 
     def test_partition_invalid_rejected(self):
-        """Invalid partition should be rejected."""
         with pytest.raises(SystemExit):
             parse_args(["--partition", "invalid", "."])
 
-    def test_log_level_default(self):
-        """Default log level should be WARNING."""
-        args = parse_args(["."])
-        assert args.logLevel == "WARNING"
-
-    def test_log_level_can_be_changed(self):
-        """Log level should be configurable."""
-        args = parse_args(["--logLevel", "DEBUG", "."])
-        assert args.logLevel == "DEBUG"
+    def test_log_level(self):
+        assert parse_args(["."]).logLevel == "INFO"
+        assert parse_args(["--logLevel", "DEBUG", "."]).logLevel == "DEBUG"
 
     def test_version_flag_accepted(self):
-        """--version flag should be accepted."""
-        args = parse_args(["--version"])
-        assert args.version is True
-
-    def test_dry_run_flag(self):
-        """--dry-run should be accepted."""
-        args = parse_args(["--dry-run", "."])
-        assert args.dry_run is True
+        assert parse_args(["--version"]).version is True
 
     def test_no_slurm_flag(self):
-        """--no-slurm should be accepted."""
-        args = parse_args(["--no-slurm", "."])
-        assert args.no_slurm is True
+        assert parse_args(["--no-slurm", "."]).no_slurm is True
 
     def test_default_paths_is_current_dir(self):
-        """Default path should be current directory."""
         from pathlib import Path
 
-        args = parse_args([])
-        assert args.paths == [Path(".")]
+        assert parse_args([]).paths == [Path(".")]
 
     def test_multiple_paths_accepted(self):
-        """Multiple paths should be accepted."""
-        args = parse_args(["path1", "path2", "path3"])
-        assert len(args.paths) == 3
+        assert len(parse_args(["path1", "path2", "path3"]).paths) == 3
+
+    @pytest.mark.parametrize("flag", ["--dry-run", "--moccainipath=x"])
+    def test_removed_flags_rejected(self, flag):
+        with pytest.raises(SystemExit):
+            parse_args([flag, "."])
+
+    def test_mocca_paths_options(self):
+        from pathlib import Path
+
+        args = parse_args([".", "--mocca-src", "a", "--mocca-binary", "b", "--from", "c", "--keep-mocca-binary"])
+        assert (args.mocca_src, args.mocca_binary, args.ref_dir) == (Path("a"), Path("b"), Path("c"))
+        assert args.keep_mocca_binary is True
+
+    def test_keep_mocca_binary_default_false(self):
+        assert parse_args(["."]).keep_mocca_binary is False
+
+    def test_keep_mocca_binary_short_flag(self):
+        assert parse_args(["-k", "."]).keep_mocca_binary is True
+
 
 
 class TestCleanArg:
-    """Tests for --clean argument parsing."""
-
     def test_clean_without_value_defaults_to_outputs(self):
-        """--clean without value should default to 'outputs'."""
-        args = parse_args([".", "--clean"])
-        assert args.clean == "outputs"
+        assert parse_args([".", "--clean"]).clean == "outputs"
 
-    def test_clean_all(self):
-        """--clean all should be accepted."""
-        args = parse_args([".", "--clean", "all"])
-        assert args.clean == "all"
-
-    def test_clean_outputs(self):
-        """--clean outputs should be accepted."""
-        args = parse_args([".", "--clean", "outputs"])
-        assert args.clean == "outputs"
+    @pytest.mark.parametrize("mode", ["all", "outputs"])
+    def test_clean_modes(self, mode):
+        assert parse_args([".", "--clean", mode]).clean == mode
 
     def test_clean_default_is_none(self):
-        """Default should be None (not set)."""
-        args = parse_args(["."])
-        assert args.clean is None
+        assert parse_args(["."]).clean is None
 
     def test_clean_invalid_rejected(self):
-        """--clean with an unexpected value should be rejected."""
         with pytest.raises(SystemExit):
             parse_args([".", "--clean", "foo"])
 
 
 class TestMakeArg:
-    """Tests for --make argument parsing."""
-
     def test_make_bare(self):
-        """Bare --make should default to empty options."""
-        args = parse_args([".", "--make"])
-        assert args.make == ""
+        assert parse_args([".", "--make"]).make == ""
 
     def test_make_opts(self):
-        """--make should accept comma-separated known options."""
-        args = parse_args([".", "--make", "clean,large"])
-        assert args.make == "clean,large"
+        assert parse_args([".", "--make", "clean,large"]).make == "clean,large"
 
-    def test_make_invalid_rejected(self):
-        """--make with an unexpected option should be rejected."""
+    @pytest.mark.parametrize("bad", ["path/to/sim", "find"])
+    def test_make_invalid_rejected(self, bad):
         with pytest.raises(SystemExit):
-            parse_args([".", "--make", "path/to/sim"])
+            parse_args([".", "--make", bad])
 
 
-class TestMainPrecedence:
-    """Tests for linear compile -> clean -> run chaining in main()."""
+class TestRunArg:
+    def test_run_default_is_false(self):
+        assert parse_args(["."]).run_sim is False
+
+    @pytest.mark.parametrize("flag", ["--run", "-r"])
+    def test_run_flag(self, flag):
+        assert parse_args([flag, "."]).run_sim is True
+
+
+class TestMainChaining:
+    """main() chains: compile once -> per path: clean -> prepare/run."""
 
     @staticmethod
-    def _run(argv, tmp_path, monkeypatch, moccarun_module):
+    def _run(argv, monkeypatch):
         order = []
-        monkeypatch.setattr(moccarun_module, "find_mocca_src_path", lambda p: tmp_path)
-        monkeypatch.setattr(moccarun_module, "make_mocca", lambda *a, **k: order.append("make"))
-        monkeypatch.setattr(moccarun_module, "clean_dir", lambda *a, **k: order.append("clean"))
-        monkeypatch.setattr(moccarun_module, "moccarun", lambda *a, **k: order.append("run"))
-        monkeypatch.setattr(moccarun_module, "verify_cleaned", lambda *a, **k: True)
-        monkeypatch.setattr("sys.argv", ["mrun", *argv])
-        moccarun_module.main()
+        monkeypatch.setattr(moccarun, "resolve_mocca_src", lambda *a, **k: "src")
+        monkeypatch.setattr(moccarun, "get_user_email", lambda e=None: "me@example.org")
+        monkeypatch.setattr(moccarun, "make_mocca", lambda *a, **k: order.append("make"))
+        monkeypatch.setattr(moccarun, "clean_dir", lambda *a, **k: order.append("clean"))
+        monkeypatch.setattr(moccarun, "moccarun", lambda *a, **k: order.append("run"))
+        assert moccarun.main(argv) == 0
         return order
 
     def test_make_clean_run_order(self, tmp_path, monkeypatch):
-        """--make --clean --run should chain compile -> clean -> run."""
-        import moccarun
+        assert self._run([str(tmp_path), "--make", "--clean", "--run"], monkeypatch) == [
+            "make", "clean", "run"
+        ]
 
-        sim = str(tmp_path / "sim")
-        (tmp_path / "sim").mkdir()
-        order = self._run([sim, "--make", "--clean", "--run"], tmp_path, monkeypatch, moccarun)
-        assert order == ["make", "clean", "run"]
+    def test_default_only_prepares(self, tmp_path, monkeypatch):
+        assert self._run([str(tmp_path)], monkeypatch) == ["run"]
 
-    def test_default_only_runs(self, tmp_path, monkeypatch):
-        """No flags should still run moccarun (dry-run prep)."""
-        import moccarun
+    def test_make_then_run(self, tmp_path, monkeypatch):
+        assert self._run([str(tmp_path), "--make"], monkeypatch) == ["make", "run"]
 
-        sim = str(tmp_path / "sim")
-        (tmp_path / "sim").mkdir()
-        order = self._run([sim], tmp_path, monkeypatch, moccarun)
-        assert order == ["run"]
+    def test_clean_then_run(self, tmp_path, monkeypatch):
+        assert self._run([str(tmp_path), "--clean", "all"], monkeypatch) == ["clean", "run"]
 
-    def test_make_only_compiles_then_runs(self, tmp_path, monkeypatch):
-        """--make alone should compile then run, without cleaning."""
-        import moccarun
+    def test_clean_skips_missing_dir(self, tmp_path, monkeypatch):
+        assert self._run([str(tmp_path / "new"), "--clean"], monkeypatch) == ["run"]
 
-        sim = str(tmp_path / "sim")
-        (tmp_path / "sim").mkdir()
-        order = self._run([sim, "--make"], tmp_path, monkeypatch, moccarun)
-        assert order == ["make", "run"]
+    def test_make_once_for_many_paths(self, tmp_path, monkeypatch):
+        order = self._run([str(tmp_path / "a"), str(tmp_path / "b"), "--make"], monkeypatch)
+        assert order == ["make", "run", "run"]
 
-    def test_clean_only_cleans_then_runs(self, tmp_path, monkeypatch):
-        """--clean alone should clean then run, without compiling."""
-        import moccarun
+    def test_grid_expands_paths_and_ini(self, tmp_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(moccarun, "get_user_email", lambda e=None: "me@example.org")
+        monkeypatch.setattr(moccarun, "moccarun", lambda path, *a, **k: calls.append((path.name, k["moccaini"])))
+        argv = [str(tmp_path), "--grid", '{"n": [1, 2], "w0": [3]}', "--moccaini", '{"fracb": 0.5}']
+        assert moccarun.main(argv) == 0
+        assert calls == [
+            ("n=1_w0=3", {"fracb": 0.5, "n": 1, "w0": 3}),
+            ("n=2_w0=3", {"fracb": 0.5, "n": 2, "w0": 3}),
+        ]
 
-        sim = str(tmp_path / "sim")
-        (tmp_path / "sim").mkdir()
-        order = self._run([sim, "--clean", "all"], tmp_path, monkeypatch, moccarun)
-        assert order == ["clean", "run"]
+    def test_grid_needs_single_path(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(moccarun, "get_user_email", lambda e=None: "me@example.org")
+        assert moccarun.main(["a", "b", "--grid", "{}"]) == 1
+
+    def test_error_returns_nonzero(self, tmp_path, monkeypatch):
+        def fail(*a, **k):
+            raise moccarun.MoccaError("boom")
+
+        monkeypatch.setattr(moccarun, "get_user_email", lambda e=None: "me@example.org")
+        monkeypatch.setattr(moccarun, "moccarun", fail)
+        assert moccarun.main([str(tmp_path)]) == 1
 
 
-class TestVerifyCleaned:
-    """Tests for verify_cleaned() post-condition check."""
-
-    def test_no_leftover_files(self, tmp_path):
-        """Only keep files present -> True."""
-        import moccarun
-
+class TestCleanDir:
+    def test_removes_all_but_kept(self, tmp_path):
         (tmp_path / "mocca.ini").write_text("")
-        (tmp_path / "mocca.slurm").write_text("")
-        assert moccarun.verify_cleaned(tmp_path, ["mocca.ini", "mocca.slurm"]) is True
-
-    def test_leftover_files_fail(self, tmp_path):
-        """Extra files remain -> False."""
-        import moccarun
-
-        (tmp_path / "mocca.ini").write_text("")
-        (tmp_path / "stale_output.log").write_text("")
-        assert moccarun.verify_cleaned(tmp_path, ["mocca.ini"]) is False
-
-    def test_empty_dir_ok(self, tmp_path):
-        """Empty dir has no leftovers -> True."""
-        import moccarun
-
-        assert moccarun.verify_cleaned(tmp_path, ["mocca.ini"]) is True
+        (tmp_path / "out.dat").write_text("")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "x").write_text("")
+        moccarun.clean_dir(tmp_path, keep=["mocca.ini"])
+        assert [p.name for p in tmp_path.iterdir()] == ["mocca.ini"]
 
 
 class _FakeProc:
@@ -208,104 +177,53 @@ class _FakeProc:
 class TestMakeMocca:
     """Tests for make_mocca() return-code and fresh-binary verification."""
 
-    @staticmethod
-    def _setup(tmp_path, monkeypatch):
-        import moccarun
-
-        src = tmp_path / "src"
-        src.mkdir()
-        return moccarun, src
-
     def test_compile_failure_exits(self, tmp_path, monkeypatch):
-        """Non-zero make return code -> exit."""
-        import moccarun
-
-        moccarun, src = self._setup(tmp_path, monkeypatch)
         monkeypatch.setattr(moccarun, "run", lambda cmd, **k: _FakeProc(1))
-        with pytest.raises(SystemExit):
-            moccarun.make_mocca(src, opts=["clean"])
+        with pytest.raises(moccarun.MoccaError):
+            moccarun.make_mocca(tmp_path, opts=["clean"])
 
     def test_missing_binary_exits(self, tmp_path, monkeypatch):
-        """make returned 0 but no binary -> exit."""
-        import moccarun
-
-        moccarun, src = self._setup(tmp_path, monkeypatch)
         monkeypatch.setattr(moccarun, "run", lambda cmd, **k: _FakeProc(0))
-        with pytest.raises(SystemExit):
-            moccarun.make_mocca(src, opts=["clean"])
+        with pytest.raises(moccarun.MoccaError):
+            moccarun.make_mocca(tmp_path, opts=["clean"])
 
     def test_stale_binary_exits(self, tmp_path, monkeypatch):
-        """Pre-existing binary not rebuilt after 'make clean' -> exit."""
-        import moccarun
-
-        moccarun, src = self._setup(tmp_path, monkeypatch)
-        (src / "mocca").write_text("")  # pre-existing, stale (before t0)
+        (tmp_path / "mocca").write_text("")
         monkeypatch.setattr(moccarun, "run", lambda cmd, **k: _FakeProc(0))
-        with pytest.raises(SystemExit):
-            moccarun.make_mocca(src, opts=["clean"])
+        with pytest.raises(moccarun.MoccaError):
+            moccarun.make_mocca(tmp_path, opts=["clean"])
 
     def test_fresh_binary_ok(self, tmp_path, monkeypatch):
-        """Binary created during make -> no error."""
-        import moccarun
-
-        moccarun, src = self._setup(tmp_path, monkeypatch)
-
         def fake_run(cmd, **k):
-            (src / "mocca").write_text("binary")  # built during make (after t0)
+            (tmp_path / "mocca").write_text("binary")
             return _FakeProc(0)
 
         monkeypatch.setattr(moccarun, "run", fake_run)
-        moccarun.make_mocca(src, opts=["clean"])  # no exception
+        moccarun.make_mocca(tmp_path, opts=["clean"])
 
+    def test_make_commands_run_in_src(self, tmp_path, monkeypatch):
+        calls = []
 
-class TestVerifyShortCircuit:
-    """Tests that verification failure skips later steps."""
+        def fake_run(cmd, **k):
+            calls.append((cmd, k["cwd"]))
+            (tmp_path / "mocca").write_text("binary")
+            return _FakeProc(0)
 
-    def test_clean_verify_failure_skips_run(self, tmp_path, monkeypatch):
-        """--clean with leftover files should skip moccarun."""
-        import moccarun
+        monkeypatch.setattr(moccarun, "run", fake_run)
+        moccarun.make_mocca(tmp_path, opts=["clean"])
+        assert calls == [(["make", "clean"], tmp_path), (["make", "debug"], tmp_path)]
 
-        sim = str(tmp_path / "sim")
-        (tmp_path / "sim").mkdir()
-        order = []
-        monkeypatch.setattr(moccarun, "find_mocca_src_path", lambda p: tmp_path)
-        monkeypatch.setattr(moccarun, "make_mocca", lambda *a, **k: order.append("make"))
-        monkeypatch.setattr(moccarun, "clean_dir", lambda *a, **k: order.append("clean"))
-        monkeypatch.setattr(moccarun, "moccarun", lambda *a, **k: order.append("run"))
-        monkeypatch.setattr(moccarun, "verify_cleaned", lambda *a, **k: False)
-        monkeypatch.setattr("sys.argv", ["mrun", sim, "--clean", "all"])
-        moccarun.main()
-        assert order == ["clean"]
+    def test_size_edits_params_h(self, tmp_path, monkeypatch):
+        (tmp_path / "MOCCA").mkdir()
+        params = tmp_path / "MOCCA" / "params.h"
+        params.write_text("      PARAMETER (NMAX=3276007,NBMAX3=1596002,NZONMA=20100,NSUPZO=400)\n")
 
+        def fake_run(cmd, **k):
+            (tmp_path / "mocca").write_text("binary")
+            return _FakeProc(0)
 
-class TestPartitionAlias:
-    """Tests for -p shorthand for --partition."""
-
-    def test_partition_via_p(self):
-        """-p short should work as --partition short."""
-        args = parse_args(["-p", "short", "."])
-        assert args.partition == "short"
-
-    def test_partition_via_long(self):
-        """--partition should still work."""
-        args = parse_args(["--partition", "bigmem", "."])
-        assert args.partition == "bigmem"
-
-
-class TestRunArg:
-    """Tests for --run argument parsing."""
-
-    def test_run_default_is_false(self):
-        """--run should default to False."""
-        args = parse_args(["."])
-        assert args.run_sim is False
-
-    def test_run_flag(self):
-        """--run should set run_sim to True."""
-        args = parse_args(["--run", "."])
-        assert args.run_sim is True
-
-    def test_run_via_r(self):
-        """-r should set run_sim to True."""
-        args = parse_args([".", "-r"])
-        assert args.run_sim is True
+        monkeypatch.setattr(moccarun, "run", fake_run)
+        moccarun.make_mocca(tmp_path, opts=["large"])
+        assert params.read_text() == (
+            "      PARAMETER (NMAX=5200000,NBMAX3=5200000,NZONMA=20100,NSUPZO=600)\n"
+        )

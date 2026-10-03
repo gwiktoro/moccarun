@@ -1,59 +1,55 @@
 import os
-import pytest
 from unittest.mock import patch
-from pathlib import Path
-from configparser import ConfigParser
-import tempfile
+
+import pytest
+
+import moccarun
+from moccarun import get_user_email
+
+
+@pytest.fixture
+def git_email(monkeypatch):
+    """control what `git config user.email` returns"""
+
+    def set_(value):
+        monkeypatch.setattr(moccarun, "git_user_email", lambda: value)
+
+    return set_
 
 
 class TestGetUserEmail:
-    """Tests for get_user_email() function."""
+    """Tests for get_user_email(): CLI > MOCCARUN_EMAIL > git config > EMAIL"""
 
     def test_cli_email_returns_directly(self):
-        """CLI argument should return immediately."""
-        from moccarun import get_user_email
-
         assert get_user_email("test@example.com") == "test@example.com"
 
     @patch.dict(os.environ, {"MOCCARUN_EMAIL": "env@example.com"})
-    def test_env_email_fallback(self):
-        """MOCCARUN_EMAIL should be used when no CLI arg."""
-        from moccarun import get_user_email
-
+    def test_env_email_beats_git(self, git_email):
+        git_email("git@example.com")
         assert get_user_email() == "env@example.com"
 
-    @patch.dict(
-        os.environ, {"MOCCARUN_EMAIL": "", "EMAIL": "system@example.com"}, clear=True
-    )
-    def test_email_env_fallback(self):
-        """EMAIL should be used as last fallback."""
-        from moccarun import get_user_email
+    @patch.dict(os.environ, {"MOCCARUN_EMAIL": "", "EMAIL": "system@example.com"})
+    def test_git_config_email(self, git_email):
+        git_email("git@example.com")
+        assert get_user_email() == "git@example.com"
 
-        # Must also mock gitconfig to not interfere
-        with patch.object(Path, "home", return_value=Path("/nonexistent")):
-            assert get_user_email() == "system@example.com"
+    @patch.dict(os.environ, {"MOCCARUN_EMAIL": "", "EMAIL": "system@example.com"})
+    def test_email_env_last_fallback(self, git_email):
+        git_email(None)
+        assert get_user_email() == "system@example.com"
 
-    def test_no_email_raises_error(self):
-        """Should raise ValueError when no email available."""
-        from moccarun import get_user_email
+    @patch.dict(os.environ, {"MOCCARUN_EMAIL": "", "EMAIL": ""})
+    def test_no_email_raises_error(self, git_email):
+        git_email(None)
+        with pytest.raises(ValueError, match="No email provided"):
+            get_user_email()
 
-        with patch.dict(os.environ, {}, clear=True):
-            with patch.object(Path, "home", return_value=Path("/nonexistent")):
-                with pytest.raises(ValueError, match="No email provided"):
-                    get_user_email()
 
-    @patch.dict(os.environ, {"MOCCARUN_EMAIL": "", "EMAIL": ""}, clear=True)
-    def test_gitconfig_fallback(self, tmp_path):
-        """Should read from ~/.gitconfig if present."""
-        # Create temp gitconfig
-        gitconfig = tmp_path / ".gitconfig"
-        parser = ConfigParser()
-        parser.read(gitconfig)
-        gitconfig.write_text("[user]\nemail = git@example.com\n")
-
-        with patch.dict(os.environ, {"HOME": str(tmp_path)}):
-            from moccarun import get_user_email
-
-            # Clear MOCCARUN_EMAIL
-            result = get_user_email()
-            assert result == "git@example.com"
+class TestGitUserEmail:
+    def test_reads_global_gitconfig(self, tmp_path, monkeypatch):
+        (tmp_path / ".gitconfig").write_text("[user]\n\temail = git@example.com\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.chdir(tmp_path)  # not inside a repo with its own user.email
+        assert moccarun.git_user_email() == "git@example.com"
