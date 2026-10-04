@@ -44,7 +44,7 @@ wheels = [
 
 [[package]]
 name = "moccarun"
-version = "2608111845"
+version = "2610031625"
 source = { virtual = "." }
 dependencies = [
     { name = "loguru" },

@@ -22,6 +22,11 @@ uv run python moccarun.py path/to/simulation
 - `--make` compiles once per execution, before any preparation.
 - Logging (loguru, stderr, default INFO via `setup_logging()`): every action/skip/rejection must be logged; expected failures raise `MoccaError`, reported once by `execute()` per simulation (others continue, exit code 1) or by `main()`. Tests: `tests/test_logging.py`.
 
+## Queue and Compute Node
+- `--squeue`: `squeue -u <current user> -o SQUEUE_FORMAT` (wide job-name column `%.48j`), captured, printed and failure -> `MoccaError` (`squeue_command()`, `squeue()`). It runs **last** in `execute()`, after `--grep` or the simulations; alone (nothing to prepare, `work_requested()` false) no simulation is prepared and preparation-only options are reported as ignored (`SQUEUE_IGNORED`).
+- `--srun [NODE]`: `srun -N 1 -J <job> --mem-per-cpu=8GB -p bigmem [-w NODE] --pty bash` (`SRUN_NODES`, `SRUN_RES`, `SRUN_SHELL`, `srun_command()`). `srun()` `os.execvp`s it: `mrun` becomes `srun` (terminal owned by the session, nothing waited for/captured/logged, no exit code); a missing `srun` binary is an `OSError` reported by `main()`. Job name = current directory name, or the single given path. Exclusive: rejected with any other option (`SRUN_EXCLUSIVE`), or with more than one path.
+- Positional `paths` default to `[]`; `paths_of(args)` resolves them to the current directory when none is given.
+
 ## Makefile
 Targets: `install` (uv tool install .), `test`, `sync` (--extra dev), `setup-hooks`, `clean`.
 
@@ -43,7 +48,7 @@ Uses `uv` (lockfile exists). Dependencies: `loguru>=0.7.3`. Dev: `pytest>=9.0.3`
 
 ## Files
 - `moccarun.py` - Main CLI entry point
-- `tests/` - Test suite (cli, email, version, mocca_src, prepare); `conftest.py` builds a fake MOCCA git repo
+- `tests/` - Test suite (cli, email, version, mocca_src, prepare, slurm); `conftest.py` builds a fake MOCCA git repo and holds the `log` fixture / `has(log, level, text)` helper
 - `Makefile` - install/test/sync/setup-hooks targets
 - `.githooks/pre-commit` - version auto-bump hook
 - `.github/workflows/test.yml` - CI (install + mrun --version + pytest)

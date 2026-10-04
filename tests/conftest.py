@@ -2,6 +2,9 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
+from loguru import logger
+
+import moccarun
 
 SLURM = """#!/bin/bash -l
 ## job name
@@ -66,3 +69,22 @@ def project(tmp_path):
     git(proj, "init", "-q")
     src = make_mocca_repo(proj / "mocca")
     return SimpleNamespace(root=proj, src=src, runs=proj / "runs")
+
+
+@pytest.fixture
+def log(monkeypatch):
+    """(level, message) of everything logged at INFO and above (the default level)"""
+    records = []
+    # main() reconfigures loguru; keep this sink
+    monkeypatch.setattr(moccarun, "setup_logging", lambda level="INFO": None)
+    hid = logger.add(lambda m: records.append((m.record["level"].name, m.record["message"])), level="INFO")
+    yield records
+    try:
+        logger.remove(hid)
+    except ValueError:
+        pass
+
+
+def has(log, level, text):
+    """was something logged at `level` containing `text`?"""
+    return any(lvl == level and text in msg for lvl, msg in log)

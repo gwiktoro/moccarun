@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-__VERSION__ = "2610031625"
+__VERSION__ = "2610042103"
 
+import getpass
 import json
 import os
 import re
@@ -55,10 +56,54 @@ PARTITIONS = {
 # fraction of the partition's time limit (in minutes) at which MOCCA stops gently (for restarts)
 RUNMAXCPU_FRAC = 0.9
 
+# queue listing: only the current user's jobs, with a wide job-name column (%.48j)
+SQUEUE_FORMAT = "%.8i %.9P %.48j %.12u %.8T %.12M %.12l %.6D %R"
+# allocation requested by --srun: nodes, job name (-J), resources, node (-w), interactive bash
+SRUN_NODES = ["-N", "1"]
+SRUN_RES = ["--mem-per-cpu=8GB", "-p", "bigmem"]
+SRUN_SHELL = ["--pty", "bash"]
+
 # params.h limits: size -> (NMAX, NBMAX3, NSUPZO)
 PARAMS_H_SIZES = {"small": (2200000, 2200000, 400), "large": (5200000, 5200000, 600)}
 
 SOURCE_SUFFIXES = {".f", ".f90", ".f95", ".f03", ".f08", ".h"}
+
+# argparse dest -> option name, for the dests argparse renames
+OPTION_NAMES = {"ref_dir": "from", "run_sim": "run", "keep_mocca_binary": "keep-mocca-binary"}
+
+# options --srun (an interactive shell) refuses to be combined with
+SRUN_EXCLUSIVE = (
+    "grep",
+    "make",
+    "clean",
+    "grid",
+    "moccaini",
+    "mocca_src",
+    "mocca_binary",
+    "ref_dir",
+    "keep_mocca_binary",
+    "partition",
+    "user_email",
+    "no_slurm",
+    "run_sim",
+    "wait",
+    "escape_bin_restart",
+    "squeue",
+)
+
+# options ignored when --squeue is all that is asked for (no simulation to prepare)
+SQUEUE_IGNORED = (
+    "mocca_src",
+    "mocca_binary",
+    "ref_dir",
+    "keep_mocca_binary",
+    "moccaini",
+    "partition",
+    "user_email",
+    "no_slurm",
+    "wait",
+    "escape_bin_restart",
+)
 
 
 class MoccaError(ValueError):
@@ -326,6 +371,44 @@ def mocca_command(escape_bin_restart=False) -> tuple[list[str], str]:
     return ["./mocca"], "./mocca > zzz"
 
 
+def squeue_command(user=None) -> list[str]:
+    """argv listing `user` (default: the current user) jobs, with a wide name column"""
+    return ["squeue", "-u", user or getpass.getuser(), "-o", SQUEUE_FORMAT]
+
+
+def squeue(user=None) -> None:
+    """List the current user's jobs on the queue (captured and printed, like grep_mocca)"""
+    cmd = squeue_command(user)
+    logger.info(f"queue: {' '.join(cmd)}")
+    p = run(cmd)
+    if p.returncode != 0:
+        raise MoccaError(f"squeue failed:\n{p.stderr.decode().strip()}")
+    print(p.stdout.decode())
+
+
+def srun_command(job_name, node=None) -> list[str]:
+    """argv of an interactive shell on a compute node (`node` -> `-w node`, a host or a list)"""
+    argv = ["srun", *SRUN_NODES, "-J", job_name, *SRUN_RES]
+    if node:
+        argv += ["-w", node]
+    return argv + SRUN_SHELL
+
+
+def srun(node=None, job_name=None) -> None:
+    """Interactive shell on a compute node, replacing this process
+
+    `mrun --srun` is therefore equivalent to running the same `srun` from the shell: the
+    terminal belongs to the shell until the session ends (nothing is waited for, captured
+    or logged, and there is no exit code to return).
+
+    Raises:
+        OSError: if srun cannot be executed (reported by main())
+    """
+    cmd = srun_command(job_name or Path.cwd().name, node)
+    logger.info(f"running: {' '.join(cmd)}")
+    os.execvp(cmd[0], cmd)
+
+
 def prepare_inputs(path: Path, ref_dir, get_src):
     """Put mocca.ini and mocca.slurm (and *_nbody.dat from `ref_dir`) in the simulation dir
 
@@ -519,9 +602,9 @@ VERSION: {__VERSION__}
     parser.add_argument(
         "paths",
         type=Path,
-        default=[Path(".")],
+        default=[],
         nargs="*",
-        help="simulation directories (created if missing)",
+        help="simulation directories (created if missing; default: the current one)",
     )
 
     parser.add_argument(
@@ -607,6 +690,24 @@ VERSION: {__VERSION__}
         help="slurm partition name (default: not change)",
     )
 
+    # QUEUE / COMPUTE NODE
+    parser.add_argument(
+        "--squeue",
+        action="store_true",
+        help="list the current user's jobs on the queue (wide job-name column); "
+        "with simulation options, listed last, after they are done",
+    )
+    parser.add_argument(
+        "--srun",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="NODE",
+        help=f"interactive shell on a compute node: {' '.join(srun_command('NAME'))}; "
+        "NAME is the current directory (or the given path), NODE, if given, is passed with -w; "
+        "cannot be combined with other options",
+    )
+
     # EXECUTION
     parser.add_argument(
         "-r",
@@ -663,21 +764,72 @@ def grid_targets(base, grid_arg):
         yield base / name, changes
 
 
+def paths_of(args) -> list[Path]:
+    """simulation directories: the positional paths, or the current one if none was given"""
+    return args.paths or [Path(".")]
+
+
+def given_options(args, dests) -> list[str]:
+    """the options of `dests` that were given, as --option names (a bare flag counts)"""
+    return [
+        "--" + OPTION_NAMES.get(d, d).replace("_", "-")
+        for d in dests
+        if getattr(args, d, None) not in (None, False)
+    ]
+
+
+def work_requested(args) -> bool:
+    """True if a simulation has to be prepared or run, so that --squeue comes after it"""
+    return bool(args.paths) or any(
+        getattr(args, d) is not None for d in ("make", "clean", "grid")
+    ) or args.run_sim
+
+
+def execute_srun(args) -> int:
+    """--srun: an interactive shell, alone or with a single path naming the job"""
+    if len(args.paths) > 1:
+        raise MoccaError(f"--srun takes at most one path, given {len(args.paths)}")
+    if others := given_options(args, SRUN_EXCLUSIVE):
+        raise MoccaError(f"--srun cannot be combined with {', '.join(others)}")
+    job_name = args.paths[0].name if args.paths else Path.cwd().name
+    srun(args.srun or None, job_name=job_name)
+    return 0  # not reached: srun replaces this process
+
+
 def execute(args) -> int:
+    """Run the requested actions: --srun alone, or simulations and finally --squeue"""
+    if args.srun is not None:
+        return execute_srun(args)
+
+    paths = paths_of(args)
+
     if args.grep is not None:
-        grep_mocca(resolve_mocca_src(args.mocca_src, args.paths[0]), args.grep)
-        return 0
+        grep_mocca(resolve_mocca_src(args.mocca_src, paths[0]), args.grep)
+        rc = 0
+    elif args.squeue and not work_requested(args):
+        rc = 0  # nothing to prepare: the queue listing is all that was asked for
+        if ignored := given_options(args, SQUEUE_IGNORED):
+            logger.warning(f"--squeue only: ignoring {', '.join(ignored)}")
+    else:
+        rc = execute_simulations(args)
+
+    if args.squeue:
+        squeue()
+    return rc
+
+
+def execute_simulations(args) -> int:
+    """Prepare (and, with --run, start) every simulation; returns 0 if all succeeded"""
+    paths = paths_of(args)
 
     # (path, extra mocca.ini changes) for every simulation
     if args.grid is not None:
-        if len(args.paths) != 1:
-            raise MoccaError(
-                f"paths must be a single Path for '--grid' ({len(args.paths)=})"
-            )
-        targets = list(grid_targets(args.paths[0], args.grid))
-        logger.info(f"grid: {len(targets)} simulation(s) in {fix_path(args.paths[0])}")
+        if len(paths) != 1:
+            raise MoccaError(f"--grid needs exactly one path, given {len(paths)}")
+        targets = list(grid_targets(paths[0], args.grid))
+        logger.info(f"grid: {len(targets)} simulation(s) in {fix_path(paths[0])}")
     else:
-        targets = [(p, {}) for p in args.paths]
+        targets = [(p, {}) for p in paths]
 
     user_email = get_user_email(args.user_email)
 

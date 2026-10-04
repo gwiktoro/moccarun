@@ -1,6 +1,6 @@
 [project]
 name = "moccarun"
-version = "2610031625"
+version = "2610042103"
 description = "MOCCA simulation runner for SLURM clusters"
 readme = "README.md"
 requires-python = ">=3.13"

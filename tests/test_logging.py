@@ -7,25 +7,9 @@ from loguru import logger
 
 import moccarun
 
+from .conftest import has
+
 EMAIL = "me@example.org"
-
-
-@pytest.fixture
-def log(monkeypatch):
-    """(level, message) of everything logged at INFO and above (the default level)"""
-    records = []
-    # main() reconfigures loguru; keep this sink
-    monkeypatch.setattr(moccarun, "setup_logging", lambda level="INFO": None)
-    hid = logger.add(lambda m: records.append((m.record["level"].name, m.record["message"])), level="INFO")
-    yield records
-    try:
-        logger.remove(hid)
-    except ValueError:
-        pass
-
-
-def has(log, level, text):
-    return any(lvl == level and text in msg for lvl, msg in log)
 
 
 def prep(path, **kw):

@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 
 import moccarun
 from moccarun import parse_args
@@ -34,10 +35,12 @@ class TestParseArgs:
     def test_no_slurm_flag(self):
         assert parse_args(["--no-slurm", "."]).no_slurm is True
 
-    def test_default_paths_is_current_dir(self):
+    def test_no_path_means_current_dir(self):
         from pathlib import Path
 
-        assert parse_args([]).paths == [Path(".")]
+        assert moccarun.parse_args([]).paths == []
+        assert moccarun.paths_of(moccarun.parse_args([])) == [Path(".")]
+        assert moccarun.paths_of(moccarun.parse_args(["a", "b"])) == [Path("a"), Path("b")]
 
     def test_multiple_paths_accepted(self):
         assert len(parse_args(["path1", "path2", "path3"]).paths) == 3
@@ -98,6 +101,33 @@ class TestRunArg:
     @pytest.mark.parametrize("flag", ["--run", "-r"])
     def test_run_flag(self, flag):
         assert parse_args([flag, "."]).run_sim is True
+
+
+class TestSqueueArg:
+    def test_default_is_false(self):
+        assert parse_args(["."]).squeue is False
+
+    def test_squeue_flag(self):
+        assert parse_args(["--squeue"]).squeue is True
+
+    def test_squeue_takes_no_value(self):
+        args = parse_args(["--squeue", "wide"])
+        assert (args.squeue, args.paths) == (True, [Path("wide")])
+
+
+class TestSrunArg:
+    def test_default_is_none(self):
+        assert parse_args(["."]).srun is None
+
+    def test_bare_srun_is_empty_string(self):
+        assert parse_args(["--srun"]).srun == ""
+
+    def test_srun_node(self):
+        assert parse_args(["--srun", "chuck-13"]).srun == "chuck-13"
+
+    def test_srun_after_path(self):
+        args = parse_args(["runs/sim", "--srun"])
+        assert (args.srun, args.paths) == ("", [Path("runs/sim")])
 
 
 class TestMainChaining:
