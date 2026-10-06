@@ -100,7 +100,26 @@ class TestRunArg:
 
     @pytest.mark.parametrize("flag", ["--run", "-r"])
     def test_run_flag(self, flag):
-        assert parse_args([flag, "."]).run_sim is True
+        assert parse_args([flag]).run_sim is True
+
+    @pytest.mark.parametrize("flag", ["--run", "-r"])
+    def test_run_flag_with_path_after(self, flag):
+        args = parse_args([flag, ".", "sim"])
+        assert (args.run_sim, args.paths) == (".", [Path("sim")])
+
+    def test_run_job_name(self):
+        assert parse_args([".", "--run", "myjob"]).run_sim == "myjob"
+
+    def test_run_job_name_before_paths(self):
+        args = parse_args(["--run", "myjob", "a", "b"])
+        assert (args.run_sim, args.paths) == ("myjob", [Path("a"), Path("b")])
+
+    def test_run_job_name_after_paths(self):
+        args = parse_args(["a", "b", "--run", "myjob"])
+        assert (args.run_sim, args.paths) == ("myjob", [Path("a"), Path("b")])
+
+    def test_run_empty_job_name_is_bare(self):
+        assert parse_args([".", "--run", ""]).run_sim is True
 
 
 class TestSqueueArg:

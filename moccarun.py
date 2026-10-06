@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-__VERSION__ = "2610042103"
+__VERSION__ = "2610061623"
 
 import getpass
 import json
@@ -449,12 +449,13 @@ def moccarun(
     run_sim=False,
     no_slurm=False,
     escape_bin_restart=False,
+    job_name=None,
 ):
     """Prepare a simulation directory and, only if `run_sim`, start it.
 
     Preparation: mocca.ini and mocca.slurm (see prepare_inputs), the mocca binary
     (from `mocca_binary` or MOCCA's src/; skipped with `keep_mocca_binary`), then updates of
-    mocca.ini (`moccaini`, `partition`) and mocca.slurm.
+    mocca.ini (`moccaini`, `partition`) and mocca.slurm (`job_name`, `mail_user`).
     Nothing is submitted to SLURM or executed unless `run_sim` is set.
     """
     path = fix_path(path)
@@ -489,7 +490,7 @@ def moccarun(
 
     set_moccaslurm(
         path / "mocca.slurm",
-        job_name=path.name,
+        job_name=job_name or path.name,
         mail_user=user_email,
         partition=partition,
         escape_bin_restart=escape_bin_restart,
@@ -712,10 +713,15 @@ VERSION: {__VERSION__}
     parser.add_argument(
         "-r",
         "--run",
-        action="store_true",
+        nargs="?",
+        const=True,
         default=False,
         dest="run_sim",
-        help="execute simulation (submit to sbatch or run locally); without it only prepare files",
+        metavar="JOB_NAME",
+        help="execute simulation (submit to sbatch or run locally); without it only prepare files. "
+        "Optional value: the slurm job name, with placeholders {f} (simulation directory name) "
+        "and {d} (0-based counter, global for all simulations of one invocation); "
+        "default: the simulation directory name",
     )
     parser.add_argument(
         "--escape-bin-restart",
@@ -747,7 +753,10 @@ VERSION: {__VERSION__}
         default="INFO",
     )
 
-    return parser.parse_args(args)
+    args = parser.parse_args(args)
+    if args.run_sim == "":  # --run "": an empty job name is the same as no value
+        args.run_sim = True
+    return args
 
 
 def grid_targets(base, grid_arg):
@@ -840,7 +849,7 @@ def execute_simulations(args) -> int:
         )
 
     failed = []
-    for path, changes in targets:
+    for i, (path, changes) in enumerate(targets):
         logger.info(f"== {fix_path(path)}")
         try:
             if args.clean is not None:
@@ -848,6 +857,12 @@ def execute_simulations(args) -> int:
                     clean_dir(path, keep=CLEAN_MODES[args.clean])
                 else:
                     logger.info(f"--clean: {path} does not exist yet, nothing to clean")
+            job_name = args.run_sim if isinstance(args.run_sim, str) else None
+            if job_name is not None:
+                try:
+                    job_name = job_name.format(f=path.name, d=i)
+                except (KeyError, IndexError):
+                    raise MoccaError(f"bad --run job name template: {args.run_sim}")
             moccarun(
                 path,
                 user_email,
@@ -858,9 +873,10 @@ def execute_simulations(args) -> int:
                 moccaini=(args.moccaini or {}) | changes,
                 partition=args.partition,
                 wait=args.wait,
-                run_sim=args.run_sim,
+                run_sim=bool(args.run_sim),
                 no_slurm=args.no_slurm,
                 escape_bin_restart=args.escape_bin_restart,
+                job_name=job_name,
             )
         except (MoccaError, OSError) as e:
             logger.error(f"{path}: {e}")

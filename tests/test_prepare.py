@@ -4,6 +4,8 @@ import pytest
 
 import moccarun
 
+from .conftest import has
+
 EMAIL = "me@example.org"
 
 
@@ -229,3 +231,41 @@ class TestNoSubmitWithoutRun:
     def test_run_without_binary_fails(self, project, calls):
         with pytest.raises(moccarun.MoccaError, match="no mocca binary"):
             prep(project.runs / "sim", run_sim=True, keep_mocca_binary=True)
+
+
+class TestRunJobName:
+    """--run JOB_NAME: {f} (simulation dir name) and {d} (0-based global counter)."""
+
+    @staticmethod
+    def _main(monkeypatch, argv):
+        monkeypatch.setattr(moccarun, "get_user_email", lambda e=None: EMAIL)
+        return moccarun.main(argv)
+
+    def test_template(self, project, calls, monkeypatch):
+        sim = project.runs / "sim"
+        assert self._main(monkeypatch, [str(sim), "--run", "job_{f}_{d}"]) == 0
+        assert "#SBATCH -J job_sim_0\n" in (sim / "mocca.slurm").read_text()
+        assert ["sbatch", "mocca.slurm"] in calls
+
+    def test_plain_name(self, project, calls, monkeypatch):
+        sim = project.runs / "sim"
+        assert self._main(monkeypatch, [str(sim), "--run", "myjob"]) == 0
+        assert "#SBATCH -J myjob\n" in (sim / "mocca.slurm").read_text()
+
+    def test_counter_increments_over_paths(self, project, calls, monkeypatch):
+        a, b = project.runs / "a", project.runs / "b"
+        assert self._main(monkeypatch, [str(a), str(b), "--run", "x_{d}"]) == 0
+        assert "#SBATCH -J x_0\n" in (a / "mocca.slurm").read_text()
+        assert "#SBATCH -J x_1\n" in (b / "mocca.slurm").read_text()
+
+    def test_counter_increments_over_grid(self, project, calls, monkeypatch):
+        base = project.runs / "grid"
+        argv = [str(base), "--grid", '{"n": [1, 2]}', "--run", "g_{d}"]
+        assert self._main(monkeypatch, argv) == 0
+        assert "#SBATCH -J g_0\n" in (base / "n=1" / "mocca.slurm").read_text()
+        assert "#SBATCH -J g_1\n" in (base / "n=2" / "mocca.slurm").read_text()
+
+    def test_bad_template(self, project, calls, monkeypatch, log):
+        sim = project.runs / "sim"
+        assert self._main(monkeypatch, [str(sim), "--run", "bad_{x}"]) == 1
+        assert has(log, "ERROR", "bad --run job name template")

@@ -18,7 +18,7 @@ uv run python moccarun.py path/to/simulation
 ## MOCCA Discovery and Preparation
 - MOCCA src: `<git-root>/mocca/src`, else `<git-root>/src` (first wins; `find_mocca_src_path()`, git root of the simulation path, not cwd); `--mocca-src` overrides. All validated by `validate_mocca_src()`: parent of src is its own git root, a git remote URL is named `mocca` (`MOCCA_REPO_NAME`), `MOCCA_SRC_TRACKED` paths are tracked by git, makefile has a `mocca:` target, default inputs exist.
 - Prep: `mocca.ini`/`mocca.slurm` copied from src defaults only if missing; `--from` always overwrites (and brings `*_nbody.dat`, never the binary). Binary copied from `<src>/mocca` or `--mocca-binary`; `-k`/`--keep-mocca-binary` skips it.
-- Nothing is submitted/executed without `--run` (single gate in `moccarun()`).
+- Nothing is submitted/executed without `--run` (single gate in `moccarun()`). `--run` takes an optional job-name value: `--run "job_{f}_{d}"` (`{f}` = simulation dir name, `{d}` = 0-based global counter; default: dir name). Paths go before `--run` or after its value.
 - `--make` compiles once per execution, before any preparation.
 - Logging (loguru, stderr, default INFO via `setup_logging()`): every action/skip/rejection must be logged; expected failures raise `MoccaError`, reported once by `execute()` per simulation (others continue, exit code 1) or by `main()`. Tests: `tests/test_logging.py`.
 
