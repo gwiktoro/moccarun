@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-__VERSION__ = "2610080949"
+__VERSION__ = "2610081448"
 
 import getpass
 import json
@@ -394,6 +394,9 @@ def srun_command(job_name, extra=()) -> list[str]:
     """
     argv = ["srun", *SRUN_NODES, "-J", job_name, *SRUN_RES]
     for arg in extra:
+        if not arg.startswith("-"):  # a value for the preceding flag: never dedup
+            argv = argv + [arg]
+            continue
         key = arg.split("=", 1)[0]
         out, i = [], 0
         while i < len(argv):
