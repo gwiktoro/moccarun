@@ -138,15 +138,19 @@ class TestSrunArg:
     def test_default_is_none(self):
         assert parse_args(["."]).srun is None
 
-    def test_bare_srun_is_empty_string(self):
-        assert parse_args(["--srun"]).srun == ""
+    def test_bare_srun_is_empty_list(self):
+        assert parse_args(["--srun"]).srun == []
 
-    def test_srun_node(self):
-        assert parse_args(["--srun", "chuck-13"]).srun == "chuck-13"
+    def test_srun_extra_args(self):
+        assert parse_args(["--srun", "-w", "chuck-13"]).srun == ["-w", "chuck-13"]
+
+    def test_srun_extra_args_override_and_append(self):
+        argv = ["--srun", "--mem-per-cpu=16GB", "-J", "myjob"]
+        assert parse_args(argv).srun == ["--mem-per-cpu=16GB", "-J", "myjob"]
 
     def test_srun_after_path(self):
         args = parse_args(["runs/sim", "--srun"])
-        assert (args.srun, args.paths) == ("", [Path("runs/sim")])
+        assert (args.srun, args.paths) == ([], [Path("runs/sim")])
 
 
 class TestMainChaining:

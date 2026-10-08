@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-__VERSION__ = "2610061623"
+__VERSION__ = "2610080949"
 
 import getpass
 import json
@@ -9,7 +9,7 @@ import re
 import shutil
 import subprocess
 import sys
-from argparse import ArgumentParser, ArgumentTypeError
+from argparse import ArgumentParser, ArgumentTypeError, REMAINDER
 from functools import cache
 from itertools import product
 from pathlib import Path
@@ -386,15 +386,31 @@ def squeue(user=None) -> None:
     print(p.stdout.decode())
 
 
-def srun_command(job_name, node=None) -> list[str]:
-    """argv of an interactive shell on a compute node (`node` -> `-w node`, a host or a list)"""
+def srun_command(job_name, extra=()) -> list[str]:
+    """argv of an interactive shell on a compute node
+
+    `extra` arguments are passed to srun after the defaults: one whose name matches
+    a default (e.g. --mem-per-cpu=16GB) replaces it, any other is appended.
+    """
     argv = ["srun", *SRUN_NODES, "-J", job_name, *SRUN_RES]
-    if node:
-        argv += ["-w", node]
+    for arg in extra:
+        key = arg.split("=", 1)[0]
+        out, i = [], 0
+        while i < len(argv):
+            a = argv[i]
+            if a == key or a.startswith(key + "="):
+                if a == key and key != "--pty" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+                    i += 2  # separate-value flag: drop its value too
+                else:
+                    i += 1
+                continue
+            out.append(a)
+            i += 1
+        argv = out + [arg]
     return argv + SRUN_SHELL
 
 
-def srun(node=None, job_name=None) -> None:
+def srun(job_name=None, extra=()) -> None:
     """Interactive shell on a compute node, replacing this process
 
     `mrun --srun` is therefore equivalent to running the same `srun` from the shell: the
@@ -404,7 +420,7 @@ def srun(node=None, job_name=None) -> None:
     Raises:
         OSError: if srun cannot be executed (reported by main())
     """
-    cmd = srun_command(job_name or Path.cwd().name, node)
+    cmd = srun_command(job_name or Path.cwd().name, extra)
     logger.info(f"running: {' '.join(cmd)}")
     os.execvp(cmd[0], cmd)
 
@@ -700,12 +716,12 @@ VERSION: {__VERSION__}
     )
     parser.add_argument(
         "--srun",
-        nargs="?",
-        const="",
+        nargs=REMAINDER,
         default=None,
-        metavar="NODE",
+        metavar="ARG",
         help=f"interactive shell on a compute node: {' '.join(srun_command('NAME'))}; "
-        "NAME is the current directory (or the given path), NODE, if given, is passed with -w; "
+        "NAME is the current directory (or the given path), override with -J; "
+        "arguments after --srun are passed to srun (-w NODE, --mem-per-cpu=16GB, ...); "
         "cannot be combined with other options",
     )
 
@@ -800,8 +816,11 @@ def execute_srun(args) -> int:
         raise MoccaError(f"--srun takes at most one path, given {len(args.paths)}")
     if others := given_options(args, SRUN_EXCLUSIVE):
         raise MoccaError(f"--srun cannot be combined with {', '.join(others)}")
-    job_name = args.paths[0].name if args.paths else Path.cwd().name
-    srun(args.srun or None, job_name=job_name)
+    extra = args.srun or []
+    if extra and not extra[0].startswith("-"):
+        raise MoccaError(f"--srun: not an srun argument: {extra[0]} (paths go before --srun)")
+    job_name = args.paths[0].name if args.paths else None
+    srun(job_name=job_name, extra=extra)
     return 0  # not reached: srun replaces this process
 
 

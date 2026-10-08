@@ -54,8 +54,8 @@ mrun path/to/simulation --run --squeue
 # Interactive shell on a compute node (equivalent to the srun command shown by --help)
 mrun --srun
 
-# ... on a specific node
-mrun path/to/simulation --srun chuck-13
+# ... on a specific node, with more memory
+mrun path/to/simulation --srun -w chuck-13 --mem-per-cpu=16GB
 ```
 
 ## Key Features
@@ -64,7 +64,7 @@ mrun path/to/simulation --srun chuck-13
 - **Linear chaining**: `--make`, `--clean`, `--run` compose as compile → clean → run per path
 - **`--clean`**: clean output files (`outputs` keeps binary+data files; `all` keeps only ini+slurm)
 - **`--squeue`**: lists only your jobs, with a wide job-name column (`%.48j`); alone it just lists the queue (other options are reported as ignored), otherwise it runs **last**, after the simulations it was combined with
-- **`--srun`**: interactive shell on a compute node: `srun -N 1 -J <name> --mem-per-cpu=8GB -p bigmem [--w NODE] --pty bash`. The job is named after the current directory (or the given path). `mrun` **becomes** `srun` (nothing is waited for, captured or logged, and there is no exit code): the terminal belongs to the session until it ends. It cannot be combined with any other option (a single path, only naming the job, is allowed)
+- **`--srun`**: interactive shell on a compute node: `srun -N 1 -J <name> --mem-per-cpu=8GB -p bigmem --pty bash`. The job is named after the current directory (or the given path). Arguments after `--srun` are passed to srun, overriding the defaults (`-J NAME`, `-w NODE`, `--mem-per-cpu=16GB`, ...). `mrun` **becomes** `srun` (nothing is waited for, captured or logged, and there is no exit code): the terminal belongs to the session until it ends. It cannot be combined with any other option (a single path, only naming the job, is allowed)
 - **Paths are positional**: place them before option values, e.g. `mrun path/to/sim --make clean,large`. A path after `--make`/`--clean` is rejected as an unexpected option value
 - **MOCCA code**: looked up in `<git-root>/mocca/src` (MOCCA as a submodule/subdirectory of your project), else `<git-root>/src` (inside MOCCA's own repository); the first takes precedence. A candidate is accepted only if its git repository is named `mocca` on a remote and MOCCA-specific files are tracked by git there. Override with `--mocca-src PATH` (verified the same way)
 - **Preparation** (default `mrun`): creates the directory; copies `mocca.ini` (from `mocca-default-2pop.ini`) and `mocca.slurm` from MOCCA's `src/` **only if missing** (existing files are never overwritten, but `--moccaini`, `-p`, email, job name are still applied); `--from DIR` always overwrites them from `DIR`
